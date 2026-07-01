@@ -1,6 +1,6 @@
 // Command meteora-dlmm-signal is a standalone daemon that continuously watches
-// the Meteora pool-discovery API, screens pools with the same gates the Solanza
-// DLMM pipeline uses, and forwards each newly-qualifying pool to a Hermes agent
+// the Meteora pool-discovery API, screens pools with the same gates the DLMM
+// pipeline skill uses, and forwards each newly-qualifying pool to a Hermes agent
 // webhook. The agent then reviews the signal and decides whether to open a
 // concentrated-liquidity position.
 package main
