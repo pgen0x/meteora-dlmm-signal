@@ -13,14 +13,14 @@ It runs entirely on Meteora's **public pool-discovery API** — no third-party
 accounts, API keys, or scraping required to source signals.
 
 ```
-┌──────────────────────┐   HMAC-signed    ┌─────────────────────┐
-│ meteora-dlmm-signal  │  POST /webhooks/ │   Hermes agent      │
-│  (this Go daemon)    ├─────────────────▶│  ranks the batch,   │
-│                      │   dlmm-signal    │  picks 1 + strategy │
-│ poll ▸ screen ▸ dedup│  (batch array)   │  ▸ dlmm_pipeline.py │
-└──────────────────────┘                  └─────────────────────┘
-         │                                          │
-   Meteora discovery API                    Meteora on-chain (deploy/monitor)
+┌─────────────────────────┐   HMAC-signed   ┌─────────────────────┐
+│ meteora-dlmm-signal     │ POST /webhooks/ │ Hermes agent        │
+│ (this Go daemon)        ├────────────────▶│ ranks the batch,    │
+│                         │   dlmm-signal   │ picks 1 + strategy  │
+│ poll -> screen -> dedup │  (batch array)  │ -> dlmm_pipeline.py │
+└─────────────────────────┘                 └─────────────────────┘
+             │                                        │
+   Meteora discovery API              Meteora on-chain (deploy/monitor)
 ```
 
 ## Why signal-driven?
@@ -88,6 +88,12 @@ docs/SIGNAL_SCHEMA.md       webhook contract
 install.sh                  wires assets into a Hermes profile + builds daemon
 ```
 
+`install.sh` symlinks `assets/skill/scripts/` into `<profile>/skills/solana-dlmm/scripts`
+instead of copying it — edits to the pipeline/monitor/executor here take effect in every
+installed profile immediately, no reinstall needed. The scripts resolve their own profile
+dir at runtime (relative to their own file location), so no `__PROFILE__` path rewriting
+happens at install time anymore.
+
 ## Position management
 
 The daemon only handles **entry signals**. Exits are owned by the
@@ -98,6 +104,9 @@ GUARD and is the single authorized closer. Run it every 5m via Hermes cron.
 
 - Wallet keys never live in this repo. The skill reads `SOLANA_PUBLIC_KEY` /
   `SOLANA_PRIVATE_KEY` from your profile `.env` at runtime.
+- Same for RPC endpoints: set `SOLANA_RPC_URLS` (comma-separated, tried in order
+  with failover) in your profile `.env`. Never hardcode provider keys (Helius,
+  QuickNode, etc.) into the scripts — this repo is public.
 - The webhook is HMAC-SHA256 signed; keep `HERMES_WEBHOOK_SECRET` secret and
   matched on both sides.
 - Trades real funds. Start with small budgets. No warranty.

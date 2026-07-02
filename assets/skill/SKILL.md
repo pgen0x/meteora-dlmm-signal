@@ -17,7 +17,7 @@ Automated lifecycle of a Solana Meteora DLMM concentrated liquidity position:
 Screen Pools (Fee/TVL, TVL, Volatility, Base Token Safety Gates) → Deploy Single-Sided SOL LP Position → Monitor Active Bins / PnL → Exit Out-of-Range or SL/TP positions → Account realized yields.
 
 ## Scripts Directory
-`__PROFILE__/skills/solana-dlmm/scripts/`
+`<profile>/skills/solana-dlmm/scripts/` (symlinked to this repo's `assets/skill/scripts/` by `install.sh` — edit here, it's live everywhere)
 
 ---
 

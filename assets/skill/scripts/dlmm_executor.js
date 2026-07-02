@@ -7,9 +7,14 @@ const dotenv = require("dotenv");
 const fs = require("fs");
 const path = require("path");
 
+// Resolved from this file's own location (<profile>/skills/solana-dlmm/scripts/) so the
+// script works whether it's a copy or a symlink into a Hermes profile — no install-time
+// path rewrite needed.
+const PROFILE_DIR = path.dirname(path.dirname(path.dirname(__dirname)));
+
 // Load environment variables
-const profileEnvPath = "__PROFILE__/.env";
-const legacyEnvPath = "__PROFILE__/.env";
+const profileEnvPath = path.join(PROFILE_DIR, ".env");
+const legacyEnvPath = path.join(PROFILE_DIR, ".env");
 
 if (fs.existsSync(profileEnvPath)) {
   dotenv.config({ path: profileEnvPath });
@@ -21,12 +26,13 @@ if (fs.existsSync(legacyEnvPath)) {
   }
 }
 
-const RPC_URLS = [
-  "https://mainnet.helius-rpc.com/?api-key=REDACTED-HELIUS-KEY-1",
-  "https://mainnet.helius-rpc.com/?api-key=REDACTED-HELIUS-KEY-2",
-  "https://mainnet.helius-rpc.com/?api-key=REDACTED-HELIUS-KEY-3",
-  "https://REDACTED-QUICKNODE-ENDPOINT.solana-mainnet.quiknode.pro/REDACTED-QUICKNODE-TOKEN/"
-];
+// Comma-separated list of RPC endpoints, tried in order with failover on error.
+// Set SOLANA_RPC_URLS in <profile>/.env — put your own Helius/QuickNode/etc. keys
+// there, never hardcode them here (this repo is public).
+const RPC_URLS = (process.env.SOLANA_RPC_URLS || "https://api.mainnet-beta.solana.com")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 let currentRpcIndex = 0;
 

@@ -3,11 +3,17 @@
 # Runs the one-shot dlmm_monitor.py scan in a loop so auto-close + auto-swap-to-SOL
 # fire reliably instead of depending on ad-hoc gateway LLM invocations.
 
+# Resolved from this file's own location (<profile>/skills/solana-dlmm/scripts/) so the
+# script works whether it's a copy or a symlink into a Hermes profile — no install-time
+# path rewrite needed. Uses logical `pwd` (no -P) so a symlinked scripts/ dir still
+# resolves to the profile-side path, not the repo it points at.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
+
 set -a
-source __PROFILE__/.env 2>/dev/null
+source "$PROFILE_DIR/.env" 2>/dev/null
 set +a
 
-SCRIPT_DIR="__PROFILE__/skills/solana-dlmm/scripts"
 PYTHON="python3"
 
 echo "Starting DLMM Position Monitor Loop (20s interval)..."

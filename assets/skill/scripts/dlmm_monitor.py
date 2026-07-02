@@ -11,9 +11,15 @@ from local_indicators import check_local_indicators
 
 METEORA_PORTFOLIO_API = "https://dlmm.datapi.meteora.ag/portfolio/open"
 
+# Resolved from this file's own location (<profile>/skills/solana-dlmm/scripts/) so the
+# script works whether it's a copy or a symlink into a Hermes profile — no install-time
+# path rewrite needed.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROFILE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
+
 def get_wallet_address():
     try:
-        with open("__PROFILE__/.env") as f:
+        with open(os.path.join(PROFILE_DIR, ".env")) as f:
             for line in f:
                 if line.startswith("SOLANA_PUBLIC_KEY="):
                     return line.split("=", 1)[1].strip().strip('"\'')
@@ -81,7 +87,7 @@ def load_soul_dlmm_params():
         "MIN_EXIT_LIQUIDITY_USD": float(MIN_EXIT_LIQUIDITY_USD)
     }
     
-    soul_path = "__PROFILE__/SOUL.md"
+    soul_path = os.path.join(PROFILE_DIR, "SOUL.md")
     if not os.path.exists(soul_path):
         return params
         
@@ -184,7 +190,7 @@ def get_pool_liquidity_usd(pool, base_mint):
             continue
     return None
 
-EXECUTOR_PATH = "__PROFILE__/skills/solana-dlmm/scripts/dlmm_executor.js"
+EXECUTOR_PATH = os.path.join(SCRIPT_DIR, "dlmm_executor.js")
 
 def run_command(cmd, timeout=30):
     try:
@@ -233,6 +239,117 @@ def get_position_metadata(position_address):
         return json.loads(out)
     except:
         return None
+
+def build_report_row(pos_addr, pair, pool, meta, pool_liquidity_usd, pnl_pct, pnl_sol_actual,
+                      in_range, fee_per_tvl_24h, api_available, bp, active_price, entry_price,
+                      peak_pnl, trailing_active, close_reason, now):
+    """Builds one status-table row dict, shared by --report-only and live (HOLD) runs
+    so both render through the same Telegram template instead of drifting per-run."""
+    oor_val, _, _ = run_command(f"redis-cli get sol:dlmm:position:{pos_addr}:oor_since")
+    oor_minutes = (now - int(oor_val)) / 60.0 if oor_val and oor_val != "(nil)" else 0.0
+    hold_val, _, _ = run_command(f"redis-cli get \"sol:dlmm:position:{pos_addr}:ai_hold_until\"")
+    ai_hold_active = hold_val and hold_val != "(nil)" and int(hold_val) > now
+    return {
+        "position": pos_addr,
+        "pair": pair,
+        "pool": pool,
+        "base_mint": meta.get("base_mint"),
+        "base_symbol": meta.get("base_symbol"),
+        "mode": meta.get("mode", "multiday"),
+        "pool_liquidity_usd": round(pool_liquidity_usd, 0) if pool_liquidity_usd is not None else None,
+        "strategy": meta.get("strategy", "spot"),
+        "pnl_pct": round(pnl_pct, 4),
+        "pnl_sol": round(pnl_sol_actual, 6) if pnl_sol_actual is not None else None,
+        "in_range": in_range,
+        "oor_minutes": round(oor_minutes, 1),
+        "fee_per_tvl_24h": round(fee_per_tvl_24h, 2),
+        # Deterministic days-to-breakeven: loss% / (fee% earned per 24h).
+        # Computed here so the AI does NOT do this division by hand (it gets it wrong).
+        # Only meaningful when underwater AND earning fees; otherwise 0 (= no breakeven concern).
+        "break_even_days": round(abs(pnl_pct) / fee_per_tvl_24h, 2) if (pnl_pct < 0 and fee_per_tvl_24h > 0) else 0.0,
+        "unclaimed_fees_sol": round(bp.get("unclaimed_fees_sol", 0.0) if (api_available and bp) else 0.0, 6),
+        "pool_price": active_price,
+        "entry_price": entry_price,
+        "age_minutes": round((now - meta.get("deployed_at", now)) / 60.0, 1),
+        "size_sol": meta.get("size_sol", 0.5),
+        "peak_pnl": round(peak_pnl, 4),
+        "trailing_active": trailing_active,
+        "ai_hold_active": ai_hold_active,
+        "triggered_rules": [close_reason] if close_reason else [],
+        "hard_rule": close_reason and ("Stop-Loss" in close_reason or "Pumped far" in close_reason),
+    }
+
+def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes, header_label="DLMM Position Status"):
+    """Renders the fixed Telegram status template from report_rows. Used by both
+    --report-only and live runs (for positions that end the cycle in HOLD) so the
+    delivered format never depends on which code path produced the data."""
+    wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
+    lines = [f"{header_label} — {wib_str}", f"📊 Active Positions: {len(report_rows)}"]
+    if not report_rows:
+        lines.append("\nNo active positions. Bot is idle.")
+    for r in report_rows:
+        age_h = int(r["age_minutes"] // 60)
+        age_m = int(r["age_minutes"] % 60)
+        age_str = f"{r['age_minutes']:.0f} min (~{age_h}h {age_m:02d}m)" if age_h > 0 else f"{r['age_minutes']:.0f} min"
+        range_str = "🟢 In Range" if r["in_range"] else f"🔴 OOR {r['oor_minutes']:.0f}m"
+        risk = []
+        if r["triggered_rules"]:
+            risk.append(f"⚠️ Triggered: {', '.join(r['triggered_rules'])}")
+        else:
+            risk.append("✅ No triggered rules")
+        if r["trailing_active"]:
+            risk.append(f"⚠️ Trailing stop ACTIVE (peak {r['peak_pnl']:+.2f}%)")
+        else:
+            risk.append(f"✅ No trailing stop (needs +{trailing_trigger_pct:.0f}% PnL)")
+        if r["ai_hold_active"]:
+            risk.append("⚠️ AI hold override active")
+        else:
+            risk.append("✅ No AI hold override")
+        if r["fee_per_tvl_24h"] >= min_fee_tvl_24h_limit:
+            risk.append(f"✅ Healthy Fee/TVL ({r['fee_per_tvl_24h']:.2f}% ≥ {min_fee_tvl_24h_limit:.0f}% min)")
+        else:
+            risk.append(f"⚠️ Low Fee/TVL ({r['fee_per_tvl_24h']:.2f}% < {min_fee_tvl_24h_limit:.0f}% min)")
+        if r["in_range"]:
+            risk.append("✅ In range (earning fees)")
+        else:
+            risk.append(f"⚠️ Out of range {r['oor_minutes']:.0f}m (limit {max_oor_minutes}m)")
+        if r["triggered_rules"]:
+            summary = f"⚠️ Rule triggered: {r['triggered_rules'][0]}. AI reviewing."
+        elif not r["in_range"]:
+            summary = f"⏳ Out of range {r['oor_minutes']:.0f}m. Monitoring."
+        else:
+            summary = "Position healthy, earning fees. No action needed."
+        # Pipe-table card: rendered natively by the deliverer's Bot API 10.1
+        # rich-message path (config platforms.telegram.extra.rich_messages:
+        # true). Tables trigger _needs_rich_rendering -> sendRichMessage, so
+        # they render as a real table with no MarkdownV2 flattening/escapes.
+        lines += [
+            "",
+            "---",
+            "",
+            f"### {r['pair']}",
+            f"`{r['position']}`",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Mode | {r['mode']} |",
+            f"| PnL | {r['pnl_pct']:+.2f}% |",
+            *([ f"| PnL (USD) | ${(r['pnl_sol'] * sol_price_usd) if r.get('pnl_sol') is not None else (r['size_sol'] * (r['pnl_pct']/100) * sol_price_usd):+.2f} |" ] if sol_price_usd else []),
+            f"| Range Status | {range_str} |",
+            f"| Age | {age_str} |",
+            f"| Fee/TVL (24h) | {r['fee_per_tvl_24h']:.2f}% |",
+            f"| Unclaimed Fees | {r['unclaimed_fees_sol']:.4f} SOL" + (f" (${r['unclaimed_fees_sol'] * sol_price_usd:.2f})" if sol_price_usd else "") + " |",
+            f"| Position Size | {r['size_sol']} SOL |",
+            f"| Entry Price | {r['entry_price']:.8f} |",
+            f"| Current Price | {r['pool_price']:.8f} |",
+            f"| Peak PnL | {r['peak_pnl']:+.2f}% |",
+            "",
+            "**Risk:**",
+        ] + [f"- {b}" for b in risk] + [
+            "",
+            f"→ {summary}",
+        ]
+    return "\n".join(lines)
 
 # local indicators are imported and check_local_indicators is used directly below.
 
@@ -669,6 +786,7 @@ def main():
 
         close_reason = None
         drop_from_peak = 0.0
+        position_closed_this_cycle = False
 
         # 1. Trailing Take-Profit Exit Check
         if trailing_active:
@@ -853,39 +971,11 @@ def main():
 
         # --report-only: collect state, skip execution
         if cli.report_only:
-            oor_val, _, _ = run_command(f"redis-cli get sol:dlmm:position:{pos_addr}:oor_since")
-            oor_minutes = (now - int(oor_val)) / 60.0 if oor_val and oor_val != "(nil)" else 0.0
-            hold_val, _, _ = run_command(f"redis-cli get \"sol:dlmm:position:{pos_addr}:ai_hold_until\"")
-            ai_hold_active = hold_val and hold_val != "(nil)" and int(hold_val) > now
-            report_rows.append({
-                "position": pos_addr,
-                "pair": pair,
-                "pool": pool,
-                "base_mint": meta.get("base_mint"),
-                "base_symbol": meta.get("base_symbol"),
-                "mode": meta.get("mode", "multiday"),
-                "pool_liquidity_usd": round(pool_liquidity_usd, 0) if pool_liquidity_usd is not None else None,
-                "strategy": meta.get("strategy", "spot"),
-                "pnl_pct": round(pnl_pct, 4),
-                "pnl_sol": round(pnl_sol_actual, 6) if pnl_sol_actual is not None else None,
-                "in_range": in_range,
-                "oor_minutes": round(oor_minutes, 1),
-                "fee_per_tvl_24h": round(fee_per_tvl_24h, 2),
-                # Deterministic days-to-breakeven: loss% / (fee% earned per 24h).
-                # Computed here so the AI does NOT do this division by hand (it gets it wrong).
-                # Only meaningful when underwater AND earning fees; otherwise 0 (= no breakeven concern).
-                "break_even_days": round(abs(pnl_pct) / fee_per_tvl_24h, 2) if (pnl_pct < 0 and fee_per_tvl_24h > 0) else 0.0,
-                "unclaimed_fees_sol": round(bp.get("unclaimed_fees_sol", 0.0) if (api_available and bp) else 0.0, 6),
-                "pool_price": active_price,
-                "entry_price": entry_price,
-                "age_minutes": round((now - meta.get("deployed_at", now)) / 60.0, 1),
-                "size_sol": meta.get("size_sol", 0.5),
-                "peak_pnl": round(peak_pnl, 4),
-                "trailing_active": trailing_active,
-                "ai_hold_active": ai_hold_active,
-                "triggered_rules": [close_reason] if close_reason else [],
-                "hard_rule": close_reason and ("Stop-Loss" in close_reason or "Pumped far" in close_reason),
-            })
+            report_rows.append(build_report_row(
+                pos_addr, pair, pool, meta, pool_liquidity_usd, pnl_pct, pnl_sol_actual,
+                in_range, fee_per_tvl_24h, api_available, bp, active_price, entry_price,
+                peak_pnl, trailing_active, close_reason, now,
+            ))
             continue
 
         # AI hold check — suppress rule-based close if AI flagged hold
@@ -910,6 +1000,7 @@ def main():
             close_res, close_err = run_command_json(close_cmd)
             
             if close_res and close_res.get("success"):
+                position_closed_this_cycle = True
                 txs = close_res.get("txHashes", ["DRY_RUN_TX_HASH"])
                 print(f"✅ Successfully closed position {pair}. Txs: {', '.join(txs)}")
                 
@@ -1045,75 +1136,19 @@ TX | https://solscan.io/tx/{txs[0]}
             else:
                 print(f"❌ Failed to close position {pair}: {close_err or close_res.get('error')}")
 
-    if cli.report_only:
+        # Live run, position still active (HOLD, or a close attempt that failed):
+        # feed it through the same row builder as --report-only so the Telegram
+        # status card doesn't drift into an ad-hoc format on live ticks.
+        if not cli.report_only and not position_closed_this_cycle:
+            report_rows.append(build_report_row(
+                pos_addr, pair, pool, meta, pool_liquidity_usd, pnl_pct, pnl_sol_actual,
+                in_range, fee_per_tvl_24h, api_available, bp, active_price, entry_price,
+                peak_pnl, trailing_active, close_reason, now,
+            ))
+
+    if cli.report_only or report_rows:
         sol_price_usd = meteora_sol_price
-        wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
-        lines = [f"DLMM Position Status — {wib_str}", f"📊 Active Positions: {len(report_rows)}"]
-        if not report_rows:
-            lines.append("\nNo active positions. Bot is idle.")
-        for r in report_rows:
-            age_h = int(r["age_minutes"] // 60)
-            age_m = int(r["age_minutes"] % 60)
-            age_str = f"{r['age_minutes']:.0f} min (~{age_h}h {age_m:02d}m)" if age_h > 0 else f"{r['age_minutes']:.0f} min"
-            range_str = "🟢 In Range" if r["in_range"] else f"🔴 OOR {r['oor_minutes']:.0f}m"
-            risk = []
-            if r["triggered_rules"]:
-                risk.append(f"⚠️ Triggered: {', '.join(r['triggered_rules'])}")
-            else:
-                risk.append("✅ No triggered rules")
-            if r["trailing_active"]:
-                risk.append(f"⚠️ Trailing stop ACTIVE (peak {r['peak_pnl']:+.2f}%)")
-            else:
-                risk.append(f"✅ No trailing stop (needs +{trailing_trigger_pct:.0f}% PnL)")
-            if r["ai_hold_active"]:
-                risk.append("⚠️ AI hold override active")
-            else:
-                risk.append("✅ No AI hold override")
-            if r["fee_per_tvl_24h"] >= min_fee_tvl_24h_limit:
-                risk.append(f"✅ Healthy Fee/TVL ({r['fee_per_tvl_24h']:.2f}% ≥ {min_fee_tvl_24h_limit:.0f}% min)")
-            else:
-                risk.append(f"⚠️ Low Fee/TVL ({r['fee_per_tvl_24h']:.2f}% < {min_fee_tvl_24h_limit:.0f}% min)")
-            if r["in_range"]:
-                risk.append("✅ In range (earning fees)")
-            else:
-                risk.append(f"⚠️ Out of range {r['oor_minutes']:.0f}m (limit {max_oor_minutes}m)")
-            if r["triggered_rules"]:
-                summary = f"⚠️ Rule triggered: {r['triggered_rules'][0]}. AI reviewing."
-            elif not r["in_range"]:
-                summary = f"⏳ Out of range {r['oor_minutes']:.0f}m. Monitoring."
-            else:
-                summary = "Position healthy, earning fees. No action needed."
-            # Pipe-table card: rendered natively by the deliverer's Bot API 10.1
-            # rich-message path (config platforms.telegram.extra.rich_messages:
-            # true). Tables trigger _needs_rich_rendering -> sendRichMessage, so
-            # they render as a real table with no MarkdownV2 flattening/escapes.
-            lines += [
-                "",
-                "---",
-                "",
-                f"### {r['pair']}",
-                f"`{r['position']}`",
-                "",
-                "| Metric | Value |",
-                "|--------|-------|",
-                f"| Mode | {r['mode']} |",
-                f"| PnL | {r['pnl_pct']:+.2f}% |",
-                *([ f"| PnL (USD) | ${(r['pnl_sol'] * sol_price_usd) if r.get('pnl_sol') is not None else (r['size_sol'] * (r['pnl_pct']/100) * sol_price_usd):+.2f} |" ] if sol_price_usd else []),
-                f"| Range Status | {range_str} |",
-                f"| Age | {age_str} |",
-                f"| Fee/TVL (24h) | {r['fee_per_tvl_24h']:.2f}% |",
-                f"| Unclaimed Fees | {r['unclaimed_fees_sol']:.4f} SOL" + (f" (${r['unclaimed_fees_sol'] * sol_price_usd:.2f})" if sol_price_usd else "") + " |",
-                f"| Position Size | {r['size_sol']} SOL |",
-                f"| Entry Price | {r['entry_price']:.8f} |",
-                f"| Current Price | {r['pool_price']:.8f} |",
-                f"| Peak PnL | {r['peak_pnl']:+.2f}% |",
-                "",
-                "**Risk:**",
-            ] + [f"- {b}" for b in risk] + [
-                "",
-                f"→ {summary}",
-            ]
-        print("\n".join(lines))
+        print(render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes))
         print("MONITOR_REPORT:" + json.dumps({"positions": report_rows}))
 
 if __name__ == "__main__":

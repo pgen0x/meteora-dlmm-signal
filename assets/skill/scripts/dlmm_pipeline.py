@@ -45,7 +45,13 @@ MAX_BINS_BELOW = 100
 MAX_PRICE_IMPACT_PCT = 5.0
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
-EXECUTOR_PATH = "__PROFILE__/skills/solana-dlmm/scripts/dlmm_executor.js"
+
+# Resolved from this file's own location (<profile>/skills/solana-dlmm/scripts/) so the
+# script works whether it's a copy or a symlink into a Hermes profile — no install-time
+# path rewrite needed.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROFILE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
+EXECUTOR_PATH = os.path.join(SCRIPT_DIR, "dlmm_executor.js")
 
 def load_soul_dlmm_params(mode="multiday"):
     mode_def = MODE_DEFAULTS.get(mode, MODE_DEFAULTS["multiday"])
@@ -64,7 +70,7 @@ def load_soul_dlmm_params(mode="multiday"):
         "MODE": mode,
     }
     
-    soul_path = "__PROFILE__/SOUL.md"
+    soul_path = os.path.join(PROFILE_DIR, "SOUL.md")
     if not os.path.exists(soul_path):
         return params
         
@@ -194,7 +200,7 @@ def get_wallet_sol_balance():
 def get_open_positions():
     # Primary: Meteora Portfolio API (handles wide-range positions SDK misses)
     try:
-        env_path = "__PROFILE__/.env"
+        env_path = os.path.join(PROFILE_DIR, ".env")
         wallet = None
         with open(env_path) as f:
             for line in f:
@@ -242,7 +248,7 @@ def fetch_top_pools(timeframe="24h", page_size=50):
 # local indicators are imported and check_local_indicators is used directly below.
 
 def check_smart_wallets_on_pool(pool_address):
-    path = "__PROFILE__/smart_wallets.json"
+    path = os.path.join(PROFILE_DIR, "smart_wallets.json")
     if not os.path.exists(path):
         return 0
     try:
@@ -304,7 +310,7 @@ def get_active_positions_count_for_mode(mode):
 def reconcile_redis_vs_meteora():
     """Prune active_positions set and orphan keys against Meteora API truth. Grace: skip positions deployed <2h ago."""
     try:
-        env_path = "__PROFILE__/.env"
+        env_path = os.path.join(PROFILE_DIR, ".env")
         wallet = None
         with open(env_path) as f:
             for line in f:

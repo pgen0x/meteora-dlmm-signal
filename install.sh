@@ -12,19 +12,19 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "→ Target Hermes profile: $PROFILE"
 mkdir -p "$PROFILE/skills/solana-dlmm" "$PROFILE/skills/solana-web3/scripts"
 
-echo "→ Copying solana-dlmm skill"
-cp -r "$REPO/assets/skill/scripts" "$PROFILE/skills/solana-dlmm/"
-rm -rf "$PROFILE/skills/solana-dlmm/scripts/__pycache__"   # drop stale bytecode
+echo "→ Symlinking solana-dlmm scripts"
+# scripts/ is symlinked (not copied) so edits in the repo take effect immediately in
+# every installed profile without re-running install.sh. The scripts resolve their own
+# profile dir at runtime (3 levels up from their own file location), so no path rewrite
+# is needed here.
+if [ -e "$PROFILE/skills/solana-dlmm/scripts" ] && [ ! -L "$PROFILE/skills/solana-dlmm/scripts" ]; then
+  echo "   ⚠ $PROFILE/skills/solana-dlmm/scripts exists as a real directory (pre-symlink install)."
+  echo "     Back it up / diff it against $REPO/assets/skill/scripts, then remove it before re-running."
+  exit 1
+fi
+ln -sfn "$REPO/assets/skill/scripts" "$PROFILE/skills/solana-dlmm/scripts"
 cp "$REPO/assets/skill/SKILL.md" "$REPO/assets/skill/package.json" "$PROFILE/skills/solana-dlmm/"
 cp "$REPO/assets/skill/solana-web3-scripts/"*.py "$PROFILE/skills/solana-web3/scripts/"
-
-echo "→ Rewriting __PROFILE__ placeholder to this profile"
-# Scripts + SKILL.md ship with the literal token __PROFILE__ instead of an
-# absolute path. Wallet is read from <profile>/.env (SOLANA_PUBLIC_KEY).
-grep -rlZ "__PROFILE__" \
-  "$PROFILE/skills/solana-dlmm" \
-  "$PROFILE/skills/solana-web3/scripts" 2>/dev/null \
-  | xargs -0 -r sed -i "s#__PROFILE__#$PROFILE#g"
 
 echo "→ Installing webhook subscription (merges into existing file if present)"
 SUB_SRC="$REPO/assets/hermes/webhook_subscriptions.json"
