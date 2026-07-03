@@ -1,4 +1,4 @@
-module github.com/meteora-dlmm-signal
+module github.com/meteora-dlmm-trading-bot
 
 go 1.22
 

@@ -1,4 +1,4 @@
-# meteora-dlmm-signal
+# Meteora DLMM Trading Bot — Solana Liquidity Pool Signal Daemon for AI Agents
 
 [![Version](https://img.shields.io/badge/version-0.1.0-informational)](CHANGELOG.md)
 [![Go Version](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)](go.mod)
@@ -6,10 +6,12 @@
 [![Status](https://img.shields.io/badge/status-beta-yellow)](#project-status)
 [![Chain](https://img.shields.io/badge/chain-Solana-9945FF?logo=solana&logoColor=white)](#)
 
-A signal daemon that watches **Meteora DLMM** pools, screens them through
-quality gates, and hands your AI agent a batch of vetted candidates to pick
-from and deploy — instead of you babysitting a screener or grabbing the first
-mediocre pool a dumb cron finds.
+**meteora-dlmm-trading-bot** is a Go daemon that watches **Meteora DLMM**
+(Dynamic Liquidity Market Maker) pools on **Solana**, screens them through
+quality gates, and hands an **AI trading agent** (built on
+[Hermes](https://github.com/NousResearch/hermes)) a batch of vetted candidates
+to pick from and deploy — instead of you babysitting a screener or grabbing the
+first mediocre pool a dumb cron finds.
 
 > ⚠️ **This trades real funds.** DYOR. NFA. Use at your own risk — see
 > [Disclaimer](#disclaimer).
@@ -73,8 +75,8 @@ accounts, API keys, or scraping required to source signals.
 
 ```
 ┌─────────────────────────┐   HMAC-signed   ┌─────────────────────┐
-│ meteora-dlmm-signal     │ POST /webhooks/ │ Hermes agent        │
-│ (this Go daemon)        ├────────────────▶│ ranks the batch,    │
+│ mds (this Go daemon)    │ POST /webhooks/ │ Hermes agent        │
+│                         ├────────────────▶│ ranks the batch,    │
 │                         │   dlmm-signal   │ picks 1 + strategy  │
 │ poll -> screen -> dedup │  (batch array)  │ -> dlmm_pipeline.py │
 └─────────────────────────┘                 └─────────────────────┘
@@ -136,8 +138,8 @@ dlmm gateway install      # or persistent systemd/launchd service
 ### Installation
 
 ```bash
-git clone https://github.com/pgen0x/meteora-dlmm-signal.git
-cd meteora-dlmm-signal
+git clone https://github.com/pgen0x/meteora-dlmm-trading-bot.git
+cd meteora-dlmm-trading-bot
 
 # Installs the skill (symlinked, not copied — edits here go live instantly),
 # the webhook subscription, SOUL.md section + cron job templates, and builds mds.

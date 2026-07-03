@@ -1,4 +1,4 @@
-// Command meteora-dlmm-signal is a standalone daemon that continuously watches
+// Command meteora-dlmm-trading-bot is a standalone daemon that continuously watches
 // the Meteora pool-discovery API, screens pools with the same gates the DLMM
 // pipeline skill uses, and forwards each newly-qualifying pool to a Hermes agent
 // webhook. The agent then reviews the signal and decides whether to open a
@@ -14,8 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/meteora-dlmm-signal/internal/config"
-	"github.com/meteora-dlmm-signal/internal/scanner"
+	"github.com/meteora-dlmm-trading-bot/internal/config"
+	"github.com/meteora-dlmm-trading-bot/internal/scanner"
 )
 
 // Version follows Semantic Versioning (semver.org). Bump it alongside a
@@ -31,7 +31,7 @@ func main() {
 	}
 
 	log.SetFlags(log.LstdFlags | log.LUTC)
-	log.Printf("meteora-dlmm-signal %s starting", Version)
+	log.Printf("meteora-dlmm-trading-bot %s starting", Version)
 	cfg := config.Load()
 
 	ctx, cancel := context.WithCancel(context.Background())

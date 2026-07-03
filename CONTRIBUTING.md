@@ -21,8 +21,8 @@ more correct or more reliable," not "is this a cool feature."
 ## Development setup
 
 ```bash
-git clone https://github.com/pgen0x/meteora-dlmm-signal.git
-cd meteora-dlmm-signal
+git clone https://github.com/pgen0x/meteora-dlmm-trading-bot.git
+cd meteora-dlmm-trading-bot
 go build -o mds .
 go vet ./...
 ```

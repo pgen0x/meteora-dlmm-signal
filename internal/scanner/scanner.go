@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/meteora-dlmm-signal/internal/config"
-	"github.com/meteora-dlmm-signal/internal/meteora"
-	"github.com/meteora-dlmm-signal/internal/store"
-	"github.com/meteora-dlmm-signal/internal/webhook"
+	"github.com/meteora-dlmm-trading-bot/internal/config"
+	"github.com/meteora-dlmm-trading-bot/internal/meteora"
+	"github.com/meteora-dlmm-trading-bot/internal/store"
+	"github.com/meteora-dlmm-trading-bot/internal/webhook"
 )
 
 // batchSummary renders a compact "SYM(score)" list for one log line.
