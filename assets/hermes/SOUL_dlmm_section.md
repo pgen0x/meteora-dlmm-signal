@@ -28,9 +28,9 @@ Pipeline supports two modes with **isolated position budgets** — casual positi
 *   Indicators Preset: supertrend_break (timing presets)
 
 ### Exit Parameters
-*   Hard Stop-Loss: -15.0%
-*   Trailing TP Trigger: 5.0% (activate trailing exits once profit exceeds this)
-*   Trailing TP Drop: 1.5% (exit if profit drops by this percent from peak)
+*   Hard Stop-Loss: -15.0% (grace applies only to a young in-range position with fee/TVL ≥ 10%; an EMERGENCY floor 3pp below this always closes immediately — bypasses grace, AI holds, indicator timing, and report-only mode)
+*   Trailing TP Trigger: 3.0% (activate trailing exits once profit exceeds this; wallet history showed the old 5% trigger activated on 1 of 208 positions)
+*   Trailing TP Drop: 1.5% (floor below peak before the first ratchet tier; above +5% peak the monitor's profit ratchet takes over: peak ≥5% locks +2%, ≥10% locks +6%, ≥20% locks 70% of peak)
 *   Max Bins Pumped Above: 10 (exit if active bin exceeds upper bin by this count)
 *   Max Out of Range Minutes: 30 (exit if out of range for this long)
 *   Min Age for Yield Check: 60 minutes
@@ -45,7 +45,7 @@ interactive/gateway agent, and any manual action:
 *   **NEVER close a position when ALL of these hold:** `in_range == true` AND `fee_per_tvl_24h >= 10%`
     AND no hard exit rule has triggered (`triggered_rules` empty). A young, in-range position earning
     high fees is healthy — HOLD it regardless of a small unrealized drawdown. Closing a fresh,
-    in-range, high-fee winner is the single worst error I can make.
+    in-range, high-fee winner is the single worst error I can make (it is the Joby-class bug).
 *   **Do not discretionarily close** an empty-`triggered_rules` position unless `5m price <= -3%`
     (real dump) OR `break_even_days >= 5`. A mild pullback (e.g. -2.9% 5m) is NOT a close trigger.
 *   **Hard floor:** `pnl_pct < -15%` always closes; thin-liquidity (< Min Exit Liquidity) always

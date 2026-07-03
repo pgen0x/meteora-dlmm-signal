@@ -69,6 +69,52 @@ MIN_AGE_BEFORE_YIELD_CHECK = 60.0
 # Exit-side liquidity floor. Below the $10k entry TVL gate on purpose — only fires
 # when a pool's liquidity DRAINS after entry (the "can't exit cleanly" scenario).
 MIN_EXIT_LIQUIDITY_USD = 7000.0
+# Emergency SL floor sits this far below the configured hard SL. Below the floor the
+# close bypasses the age grace, AI holds, indicator timing, and even --report-only.
+EMERGENCY_SL_BUFFER_PCT = 3.0
+
+def trailing_floor_pct(peak_pnl, trailing_drop_pct):
+    """Profit-ratchet floor for the trailing exit. Tight near activation, locks
+    progressively more profit as the peak grows, and gives big winners room to run
+    instead of a flat drop — wallet history's best win was +5.35% because the flat
+    1.5% drop (or another rule) always cut the position first."""
+    if peak_pnl >= 20.0:
+        return max(14.0, peak_pnl * 0.70)
+    if peak_pnl >= 10.0:
+        return max(6.0, peak_pnl - 4.0)
+    if peak_pnl >= 5.0:
+        return max(2.0, peak_pnl - 2.5)
+    return peak_pnl - trailing_drop_pct
+
+def log_close(pool, pair, meta, pos_addr, pnl_pct, realized_sol, fee_per_tvl_24h,
+              age_min, reason, txs, dry_run):
+    """Append a uniform close record to memories/dlmm_closes.jsonl. Every monitor
+    close is journaled here; reconcile against the Meteora portfolio API (ground
+    truth) with dlmm_reconcile.py."""
+    entry = {
+        "ts": int(time.time()),
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source": "monitor",
+        "pool": pool,
+        "pair": pair,
+        "position": pos_addr,
+        "base_mint": meta.get("base_mint"),
+        "mode": meta.get("mode"),
+        "pnl_pct": round(float(pnl_pct), 4),
+        "pnl_sol": round(float(realized_sol), 6) if realized_sol is not None else None,
+        "fee_per_tvl_24h": round(float(fee_per_tvl_24h), 4),
+        "age_min": round(float(age_min), 1),
+        "reason": reason,
+        "txs": txs,
+        "dry_run": bool(dry_run),
+    }
+    try:
+        path = os.path.join(PROFILE_DIR, "memories", "dlmm_closes.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"⚠️ Failed to write close journal: {e}")
 
 def load_soul_dlmm_params():
     params = {
@@ -357,6 +403,7 @@ def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_f
 def main():
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument("--no-enforce", action="store_true", help="With --report-only: do not execute emergency closes (pure reporting)")
     parser.add_argument("--report-only", action="store_true", help="Output position status JSON without executing any closes")
     parser.add_argument("--override-close", type=str, default=None, metavar="POSITION_ADDR", help="AI-decided force-close for a specific position")
     parser.add_argument("--override-hold", type=str, default=None, metavar="POSITION_ADDR", help="AI-decided hold — skip auto-close rules for this position")
@@ -676,6 +723,11 @@ def main():
             
         pool = meta["pool"]
         pair = meta["pair"]
+        # Skip orphan positions (deployment failures with no entry_price)
+        if meta.get("orphan") or "entry_price" not in meta:
+            print(f"⊘ Skipping orphan position {pos_addr} ({meta.get('pair', '?')}) — stranded NFT")
+            continue
+        
         entry_price = float(meta["entry_price"])
         bins_below = meta["bins_below"]
         
@@ -787,21 +839,32 @@ def main():
         close_reason = None
         drop_from_peak = 0.0
         position_closed_this_cycle = False
+        emergency_close = False
+        emergency_reason = None
 
-        # 1. Trailing Take-Profit Exit Check
+        # 1. Trailing Take-Profit Exit Check — ratchet floor instead of flat drop
         if trailing_active:
             drop_from_peak = peak_pnl - pnl_pct
-            print(f"ℹ️ Trailing TP active: Peak PnL {peak_pnl:.2f}% | Current PnL {pnl_pct:.2f}% | Drop: {drop_from_peak:.2f}% (Limit: {trailing_drop_pct}%)")
-            if drop_from_peak >= trailing_drop_pct:
-                close_reason = f"Trailing Take-Profit hit (Peak: {peak_pnl:.2f}%, Current: {pnl_pct:.2f}%, dropped {drop_from_peak:.2f}% >= {trailing_drop_pct}%)"
+            floor_pct = trailing_floor_pct(peak_pnl, trailing_drop_pct)
+            print(f"ℹ️ Trailing TP active: Peak PnL {peak_pnl:.2f}% | Current PnL {pnl_pct:.2f}% | Ratchet floor: {floor_pct:.2f}%")
+            if pnl_pct <= floor_pct:
+                close_reason = f"Trailing Take-Profit hit (Peak: {peak_pnl:.2f}%, Current: {pnl_pct:.2f}% <= ratchet floor {floor_pct:.2f}%)"
 
-        # 2. Hard Stop-Loss Check — 15m grace period so fees can offset early IL
+        # 2. Hard Stop-Loss Check. Grace is conditional: only a young position that is
+        # still in range AND earning hard (fee/TVL >= 10%) may ride a breach of the SL,
+        # and never below the emergency floor. The old unconditional 15m grace let
+        # ALON-SOL ride to -24%; wallet history shows five >11% losses through it.
+        emergency_floor_pct = stop_loss_pct - EMERGENCY_SL_BUFFER_PCT
         age_minutes_sl = (now - meta.get("deployed_at", now)) / 60.0
-        if pnl_pct <= stop_loss_pct:
-            if age_minutes_sl >= 15:
-                close_reason = f"Hard Stop-Loss hit ({pnl_pct:.2f}% <= {stop_loss_pct}%)"
+        if pnl_pct <= emergency_floor_pct:
+            close_reason = f"EMERGENCY Stop-Loss ({pnl_pct:.2f}% <= {emergency_floor_pct:.1f}% floor) — bypasses grace/holds"
+            emergency_close = True
+            emergency_reason = close_reason
+        elif pnl_pct <= stop_loss_pct:
+            if age_minutes_sl < 15 and in_range and fee_per_tvl_24h >= 10.0:
+                print(f"⏳ SL deferred: {age_minutes_sl:.0f}m old, in range, fee/TVL {fee_per_tvl_24h:.1f}% — grace until 15m or {emergency_floor_pct:.1f}% floor")
             else:
-                print(f"⏳ SL deferred: position only {age_minutes_sl:.0f}m old (15m grace) — PnL {pnl_pct:.2f}%")
+                close_reason = f"Hard Stop-Loss hit ({pnl_pct:.2f}% <= {stop_loss_pct}%)"
 
         # 3. Pumped Far Above Range Check
         lower_bin = None
@@ -849,6 +912,13 @@ def main():
             print(f"Exit-liquidity check: pool {pair} liquidity = ${pool_liquidity_usd:,.0f} (floor ${min_exit_liquidity_usd:,.0f})")
             if pool_liquidity_usd < min_exit_liquidity_usd and not close_reason:
                 close_reason = f"Thin pool liquidity (${pool_liquidity_usd:,.0f} < ${min_exit_liquidity_usd:,.0f} floor) — exit before it strands"
+                emergency_close = True
+                emergency_reason = close_reason
+
+        # An emergency reason must not be diluted by a softer rule that fired after it
+        # (pumped-above / OOR / low-yield all overwrite close_reason unconditionally).
+        if emergency_close and emergency_reason:
+            close_reason = emergency_reason
 
         # 6. Advanced Strategies Hooks (Fee Compounding & Partial Harvesting)
         strategy = meta.get("strategy", "spot")
@@ -948,7 +1018,7 @@ def main():
 
         # 7. Pre-exit Indicators Timing Check (for non-emergency exits)
         if close_reason and params.get("INDICATORS_ENABLED"):
-            is_emergency = "stop-loss" in close_reason.lower() or "out of range" in close_reason.lower() or "pumped" in close_reason.lower()
+            is_emergency = emergency_close or "stop-loss" in close_reason.lower() or "out of range" in close_reason.lower() or "pumped" in close_reason.lower()
             if not is_emergency:
                 MAX_INDICATOR_BLOCK_MINUTES = 60.0
                 ind_block_key = f"sol:dlmm:position:{pos_addr}:indicator_blocked_since"
@@ -969,19 +1039,26 @@ def main():
                     else:
                         run_command(f"redis-cli del \"{ind_block_key}\"")
 
-        # --report-only: collect state, skip execution
-        if cli.report_only:
+        # --report-only: collect state, skip execution — EXCEPT emergency closes.
+        # The wakegate cron runs report-only and the agent decision hop adds minutes;
+        # a breach of the emergency floor cannot wait for it (SOUL GUARD: "pnl < -15%
+        # always closes"). --no-enforce restores pure reporting.
+        enforce_emergency = emergency_close and close_reason and not cli.no_enforce
+        if cli.report_only and not enforce_emergency:
             report_rows.append(build_report_row(
                 pos_addr, pair, pool, meta, pool_liquidity_usd, pnl_pct, pnl_sol_actual,
                 in_range, fee_per_tvl_24h, api_available, bp, active_price, entry_price,
                 peak_pnl, trailing_active, close_reason, now,
             ))
             continue
+        if cli.report_only and enforce_emergency:
+            print(f"⚡ [report-only] Emergency close enforced for {pair}: {close_reason}")
 
         # AI hold check — suppress rule-based close if AI flagged hold
         # Bypass if trailing TP already dropped >= 3% from peak: that's a real dump, not a bounce dip
+        # Emergency closes (SL floor / thin liquidity) are never suppressed.
         AI_HOLD_BYPASS_DROP_PCT = 3.0
-        if close_reason:
+        if close_reason and not emergency_close:
             hold_val, _, _ = run_command(f"redis-cli get \"sol:dlmm:position:{pos_addr}:ai_hold_until\"")
             if hold_val and hold_val != "(nil)" and int(hold_val) > now:
                 is_large_trailing_drop = "trailing take-profit" in close_reason.lower() and drop_from_peak >= AI_HOLD_BYPASS_DROP_PCT
@@ -1024,6 +1101,12 @@ def main():
                 run_command(f"redis-cli hincrby {pnl_key} count_exits 1")
                 if realized_sol < 0:
                     run_command(f"redis-cli hincrby {pnl_key} count_losses 1")
+
+                # Journal every close with API-verified PnL (dlmm_reconcile.py audits
+                # this file against the Meteora portfolio API).
+                log_close(pool, pair, meta, pos_addr, pnl_pct, realized_sol,
+                          fee_per_tvl_24h, age_minutes, close_reason, txs,
+                          close_res.get("dryRun") or close_res.get("dry_run") == True)
 
                 # Re-entry cooldown blacklist — prevent re-opening same token too soon
                 base_symbol_cd = meta.get("base_symbol", pair.split("-")[0]).upper()
