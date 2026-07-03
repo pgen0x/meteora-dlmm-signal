@@ -587,7 +587,7 @@ def main():
     parser.add_argument("--analyze-only", action="store_true", help="Screen pools, print all candidates JSON, exit without deploying")
     parser.add_argument("--strategy", type=str, default=None, help="Override SOUL.md strategy (spot, custom_ratio_spot, single_sided_reseed, fee_compounding, partial_harvest)")
     parser.add_argument("--pool", type=str, default=None, help="Deploy a specific pool address instead of auto-selecting winner")
-    parser.add_argument("--from-signal", dest="from_signal", type=str, default=None, help="JSON of a pre-screened candidate record from the mds signal daemon. Skips discovery+screen and deploys this exact pool; live gates (holding/cooldown/momentum/rent) still run.")
+    parser.add_argument("--from-signal", dest="from_signal", type=str, default=None, help="JSON of a pre-screened candidate record from the mdtb signal daemon. Skips discovery+screen and deploys this exact pool; live gates (holding/cooldown/momentum/rent) still run.")
     parser.add_argument("--mode", type=str, default="multiday", choices=["casual", "multiday"], help="Pipeline mode: casual (30m, 2-6h plays) or multiday (24h, 24h+ holds)")
     cli = parser.parse_args()
 
@@ -636,7 +636,7 @@ def main():
 
     # 2. Fetch candidates
     if cli.from_signal:
-        # mds signal daemon already discovered + screened this pool; deploy the
+        # mdtb signal daemon already discovered + screened this pool; deploy the
         # forwarded record directly. Skipping our own discovery/screen removes the
         # divergence between two independent trending snapshots that used to cause
         # "--pool ... not found in valid candidates. Aborting." The live gates below
