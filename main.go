@@ -18,10 +18,10 @@ import (
 	"github.com/meteora-dlmm-trading-bot/internal/scanner"
 )
 
-// Version follows Semantic Versioning (semver.org). Bump it alongside a
-// CHANGELOG.md entry and a matching `vX.Y.Z` git tag — see CONTRIBUTING.md.
-// Release builds override it via -ldflags "-X main.Version=..." (GoReleaser).
-var Version = "0.1.0"
+// Version follows Semantic Versioning (semver.org). Bumped automatically by
+// release-please from conventional commits — see CONTRIBUTING.md. Release
+// builds also override it via -ldflags "-X main.Version=..." (GoReleaser).
+var Version = "0.1.0" // x-release-please-version
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")

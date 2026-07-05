@@ -34,27 +34,12 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# release-please writes the release notes (and CHANGELOG.md); GoReleaser only
+# attaches build artifacts to the release release-please already created.
 changelog:
-  use: git
-  sort: asc
-  groups:
-    - title: Features
-      regexp: '^feat(\(.+\))?!?:'
-      order: 0
-    - title: Fixes
-      regexp: '^fix(\(.+\))?!?:'
-      order: 1
-    - title: Other
-      order: 999
-  filters:
-    exclude:
-      - '^docs:'
-      - '^chore:'
-      - '^test:'
+  disable: true
 
 release:
+  mode: keep-existing
   draft: false
   prerelease: auto
-  footer: |
-    ---
-    Full changelog: [CHANGELOG.md](https://github.com/pgen0x/meteora-dlmm-trading-bot/blob/master/CHANGELOG.md)

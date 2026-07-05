@@ -58,23 +58,28 @@ This project follows [Semantic Versioning](https://semver.org/)
 - **PATCH** — bug fix, threshold tuning, docs, no behavior contract change.
 
 The current version lives in `main.go` (`var Version`) and is reported via
-`./mdtb -version`. When your change warrants a release:
+`./mdtb -version`.
 
-1. Bump `Version` in `main.go`.
-2. Add an entry to [`CHANGELOG.md`](CHANGELOG.md) under `[Unreleased]`,
-   moved into a new dated version section.
-3. Tag it: `git tag -a vX.Y.Z -m "vX.Y.Z"` and push the tag.
+Releases are fully automated by
+[release-please](https://github.com/googleapis/release-please) — do **not**
+bump `Version`, edit `CHANGELOG.md`, or push tags by hand. Instead:
 
-Pushing the tag triggers the `Release` GitHub Actions workflow
-(`.github/workflows/release.yml`): it verifies the tag matches `Version` in
-`main.go`, then runs [GoReleaser](https://goreleaser.com/) (`.goreleaser.yaml`)
-to cross-compile `mdtb` for Linux/macOS (amd64/arm64) and publish a GitHub
-Release with archives, checksums, and a commit-derived changelog. Release
-binaries get the version injected at link time, so a mismatched `main.go`
-bump fails the workflow rather than shipping a wrong `-version` string.
+1. Write commit messages in
+   [Conventional Commits](https://www.conventionalcommits.org/) form:
+   `fix:` → PATCH, `feat:` → MINOR, a `!` suffix or `BREAKING CHANGE:` footer
+   → MAJOR. Other prefixes (`docs:`, `chore:`, `refactor:`, ...) don't
+   trigger a release.
+2. On every push to `master`, the `Release Please` workflow
+   (`.github/workflows/release-please.yml`) opens or updates a release PR
+   that bumps `Version` in `main.go`, updates `CHANGELOG.md`, and computes
+   the next semver from the commits since the last release.
+3. Merging that PR creates the `vX.Y.Z` tag and GitHub Release, then
+   [GoReleaser](https://goreleaser.com/) (`.goreleaser.yaml`) attaches
+   cross-compiled `mdtb` binaries (Linux/macOS, amd64/arm64) with checksums.
+   The version string is injected at link time.
 
-Day-to-day PRs don't need to bump the version or touch the changelog unless
-you're the one cutting the release — a maintainer will batch that.
+Day-to-day PRs just need well-formed commit messages — the release PR
+accumulates everything until a maintainer merges it to cut the release.
 
 ## Reporting bugs / requesting features
 
