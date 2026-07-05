@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v0.1.0...v1.0.0) (2026-07-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename repo to meteora-dlmm-trading-bot for SEO, add keyword-rich README intro
+
+### Features
+
+* loosen casual fee gate, trailing gap-through grace, reject tally; scrub instance-specific refs ([e0b3fc0](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/e0b3fc05174f301bd8bd2d231741823767e61162))
+* **skill:** asymmetric-exit fixes — emergency SL floor, profit ratchet, journal reconciliation ([c4c4369](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/c4c4369a8763c87ccc5c4f927ea538001485bd28))
+
+
+### Miscellaneous Chores
+
+* rename repo to meteora-dlmm-trading-bot for SEO, add keyword-rich README intro ([768ed17](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/768ed17f54da62035772b3c6a3f265d4cd817bb5))
+
 ## [Unreleased]
 
 ### Changed
