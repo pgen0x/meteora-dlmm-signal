@@ -328,7 +328,44 @@ def build_report_row(pos_addr, pair, pool, meta, pool_liquidity_usd, pnl_pct, pn
         "hard_rule": close_reason and ("Stop-Loss" in close_reason or "Pumped far" in close_reason),
     }
 
-def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes, header_label="DLMM Position Status"):
+def fetch_price_changes(base_mint):
+    """Best-effort DexScreener 5m/1h price change for a mint. Returns (m5, h1)
+    floats or None on any failure — the price row is simply omitted then."""
+    try:
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{base_mint}"
+        req = urllib.request.Request(url, headers={"User-Agent": "dlmm-lp/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+        pairs = data.get("pairs") or []
+        if not pairs:
+            return None
+        # Highest-liquidity pair is the least manipulable price source.
+        best = max(pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0.0))
+        pc = best.get("priceChange") or {}
+        return float(pc.get("m5") or 0.0), float(pc.get("h1") or 0.0)
+    except Exception:
+        return None
+
+def send_via_hermes(text, target="telegram"):
+    """Deliver text through the `hermes send` CLI (reuses gateway credentials,
+    no agent loop). Body goes through a temp file so markdown/backticks in the
+    card never touch shell quoting. Returns True on success."""
+    import shutil, tempfile
+    hermes_bin = shutil.which("hermes") or os.path.expanduser("~/.local/bin/hermes")
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write(text)
+        tmp_path = f.name
+    try:
+        res = subprocess.run([hermes_bin, "send", "--to", target, "-f", tmp_path, "--quiet"],
+                             capture_output=True, text=True, timeout=60)
+        if res.returncode != 0:
+            print(f"⚠️ hermes send failed (exit {res.returncode}): {(res.stderr or res.stdout).strip()[:300]}")
+            return False
+        return True
+    finally:
+        os.unlink(tmp_path)
+
+def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes, header_label="DLMM Position Status", price_changes=None):
     """Renders the fixed Telegram status template from report_rows. Used by both
     --report-only and live runs (for positions that end the cycle in HOLD) so the
     delivered format never depends on which code path produced the data."""
@@ -394,7 +431,9 @@ def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_f
             f"| Range | {range_str} · age {age_str} |",
             f"| Fee/TVL 24h | {r['fee_per_tvl_24h']:.2f}% · unclaimed {r['unclaimed_fees_sol']:.4f} SOL{fees_usd_str} |",
             f"| Size | {size_str} SOL @ {r['entry_price']:.8f} → {r['pool_price']:.8f} |",
-        ] + [f"- {b}" for b in warnings] + [
+        ] + ([
+            f"| Price 5m/1h | {price_changes[r['position']][0]:+.2f}% / {price_changes[r['position']][1]:+.2f}% |"
+        ] if price_changes and price_changes.get(r["position"]) else []) + [f"- {b}" for b in warnings] + [
             "",
             f"→ {summary}",
         ]
@@ -408,6 +447,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-enforce", action="store_true", help="With --report-only: do not execute emergency closes (pure reporting)")
     parser.add_argument("--report-only", action="store_true", help="Output position status JSON without executing any closes")
+    parser.add_argument("--send-report", action="store_true", help="Render the status card (with DexScreener 5m/1h price rows) and deliver it to Telegram via `hermes send`. Implies --report-only --no-enforce.")
+    parser.add_argument("--send-target", type=str, default="telegram", help="Delivery target for --send-report (default: telegram home channel)")
     parser.add_argument("--override-close", type=str, default=None, metavar="POSITION_ADDR", help="AI-decided force-close for a specific position")
     parser.add_argument("--override-hold", type=str, default=None, metavar="POSITION_ADDR", help="AI-decided hold — skip auto-close rules for this position")
     parser.add_argument("--hold-minutes", type=int, default=30, help="Minutes to hold (used with --override-hold)")
@@ -417,6 +458,13 @@ def main():
     parser.add_argument("--cleanup-tokens", action="store_true", help="Swap all leftover SPL token balances back to SOL")
     parser.add_argument("--min-swap-sol", type=float, default=0.005, help="Minimum SOL value threshold to trigger cleanup swap (default: 0.005)")
     cli = parser.parse_args()
+
+    # --send-report is a pure reporting pass that ends with a Telegram send:
+    # data collection is identical to --report-only --no-enforce. Actions
+    # (closes/claims) belong to the AI decision hop that ran just before.
+    if cli.send_report:
+        cli.report_only = True
+        cli.no_enforce = True
 
     print("🔄 Starting DLMM Position Monitor")
     
@@ -1250,8 +1298,24 @@ TX | https://solscan.io/tx/{txs[0]}
 
     if cli.report_only or report_rows:
         sol_price_usd = meteora_sol_price
-        print(render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes))
+        price_changes = None
+        if cli.send_report:
+            # One DexScreener call per distinct mint; positions sharing a mint
+            # share the result. Fail-open: missing data just omits the row.
+            by_mint = {}
+            for r in report_rows:
+                mint = r.get("base_mint")
+                if mint and mint not in by_mint:
+                    by_mint[mint] = fetch_price_changes(mint)
+            price_changes = {r["position"]: by_mint.get(r.get("base_mint")) for r in report_rows}
+        card = render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes, price_changes=price_changes)
+        print(card)
         print("MONITOR_REPORT:" + json.dumps({"positions": report_rows}))
+        if cli.send_report:
+            if not report_rows:
+                print("📭 No active positions — nothing to send.")
+            elif send_via_hermes(card, target=cli.send_target):
+                print(f"📨 Status card delivered via hermes send (target: {cli.send_target})")
 
 if __name__ == "__main__":
     main()
