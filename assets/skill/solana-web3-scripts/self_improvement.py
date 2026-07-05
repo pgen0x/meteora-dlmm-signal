@@ -93,7 +93,7 @@ async def fetch_hindsight_memories():
 
 
 def main():
-    print("# SOLANZA STRATEGY PERFORMANCE GATHERER\n")
+    print("# DLMM STRATEGY PERFORMANCE GATHERER\n")
     print(f"Current Time (WIB): {datetime.now(WIB).strftime('%Y-%m-%d %H:%M:%S')}\n")
     
     # 1. Gather Binance Web3 Wallet On-Chain Stats

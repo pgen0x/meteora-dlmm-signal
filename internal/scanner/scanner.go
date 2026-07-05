@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,39 @@ func batchSummary(batch []*meteora.Candidate) string {
 		parts = append(parts, fmt.Sprintf("%s(%.0f)", c.BaseSymbol, c.Score))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// reasonKey collapses a Screen reject reason to its stable prefix (the text
+// before the first number or colon) so per-pool reasons group into a tally.
+// "fee/TVL 0.02% < 0.10%" -> "fee/TVL", "non-SOL pool" -> "non-SOL_pool".
+func reasonKey(reason string) string {
+	if i := strings.IndexAny(reason, "0123456789:"); i >= 0 {
+		reason = reason[:i]
+	}
+	reason = strings.TrimRight(reason, " $<>=(%-")
+	if reason == "" {
+		return "other"
+	}
+	return strings.ReplaceAll(reason, " ", "_")
+}
+
+// rejectSummary renders a reject tally as "k=v k=v", highest count first.
+func rejectSummary(rejects map[string]int) string {
+	keys := make([]string, 0, len(rejects))
+	for k := range rejects {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if rejects[keys[i]] != rejects[keys[j]] {
+			return rejects[keys[i]] > rejects[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, rejects[k]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // Scanner polls the Meteora discovery API for each enabled mode, screens pools,
@@ -87,6 +121,7 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 	// Per-poll tally so a quiet cycle logs "scanned N, 0 passed" instead of
 	// nothing — distinguishes "working, nothing qualified" from "API empty".
 	var screened, deduped, momRejected int
+	rejects := map[string]int{}
 
 	// Batch mode: collect every fresh, momentum-passing candidate this cycle and
 	// emit ONE signal carrying the whole array. The agent then compares the set,
@@ -97,7 +132,8 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 	for _, p := range pools {
 		cand, reason := meteora.Screen(p, mp)
 		if reason != "" {
-			continue // failed a gate; per-pool detail too noisy, counted in summary
+			rejects[reasonKey(reason)]++ // per-pool detail too noisy; tallied per gate
+			continue
 		}
 		screened++
 
@@ -146,6 +182,10 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		}
 	}
 
-	log.Printf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d sent=%d",
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d sent=%d",
 		mp.Mode, len(pools), screened, deduped, momRejected, sent)
+	if len(rejects) > 0 {
+		line += " rejects[" + rejectSummary(rejects) + "]"
+	}
+	log.Print(line)
 }

@@ -29,7 +29,7 @@ Pipeline supports two modes with **isolated position budgets** — casual positi
 
 ### Exit Parameters
 *   Hard Stop-Loss: -15.0% (grace applies only to a young in-range position with fee/TVL ≥ 10%; an EMERGENCY floor 3pp below this always closes immediately — bypasses grace, AI holds, indicator timing, and report-only mode)
-*   Trailing TP Trigger: 3.0% (activate trailing exits once profit exceeds this; wallet history showed the old 5% trigger activated on 1 of 208 positions)
+*   Trailing TP Trigger: 3.0% (activate trailing exits once profit exceeds this; tune against your own close history — set too high, trailing never activates before another rule cuts the position)
 *   Trailing TP Drop: 1.5% (floor below peak before the first ratchet tier; above +5% peak the monitor's profit ratchet takes over: peak ≥5% locks +2%, ≥10% locks +6%, ≥20% locks 70% of peak)
 *   Max Bins Pumped Above: 10 (exit if active bin exceeds upper bin by this count)
 *   Max Out of Range Minutes: 30 (exit if out of range for this long)

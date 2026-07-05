@@ -24,10 +24,16 @@ type ModeParams struct {
 
 // Casual and Multiday mirror the two isolated budgets in the pipeline.
 // Bin-step band (80–125) ported from Meridian config; tune per strategy.
+//
+// DIVERGENCE from dlmm_pipeline.py: casual MinFeeTVL is 0.1, not the upstream
+// 0.3. The API's fee_tvl_ratio is scoped to the queried timeframe, so for the
+// 30m casual window 0.3 demanded a ~14.4%/day fee pace — live probe (2026-07-05)
+// showed the 30m median ratio at ~0.01%, so 0 of 50 pools passed most cycles.
+// 0.1 (~4.8%/day pace) still sits ~5x above multiday's 1%/day bar.
 var (
 	Casual = ModeParams{
 		Mode: "casual", Timeframe: "30m", TfMinutes: 30,
-		MinTVL: 5000, MinFeeTVL: 0.3, MinMcap: 250000, MinHolders: 500,
+		MinTVL: 5000, MinFeeTVL: 0.1, MinMcap: 250000, MinHolders: 500,
 		MinDailyFee: 20, MinOrganic: 60, MinQuoteOrganic: 60,
 		MinBinStep: 80, MaxBinStep: 125,
 	}

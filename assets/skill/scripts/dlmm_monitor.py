@@ -72,12 +72,15 @@ MIN_EXIT_LIQUIDITY_USD = 7000.0
 # Emergency SL floor sits this far below the configured hard SL. Below the floor the
 # close bypasses the age grace, AI holds, indicator timing, and even --report-only.
 EMERGENCY_SL_BUFFER_PCT = 3.0
+# Trailing TP must lock at least this much (≈ round-trip swap cost) to count as a
+# take-profit. Below it, a floor breach gets one-tick gap-through grace first.
+TRAILING_MIN_LOCK_PCT = 0.3
 
 def trailing_floor_pct(peak_pnl, trailing_drop_pct):
     """Profit-ratchet floor for the trailing exit. Tight near activation, locks
     progressively more profit as the peak grows, and gives big winners room to run
-    instead of a flat drop — wallet history's best win was +5.35% because the flat
-    1.5% drop (or another rule) always cut the position first."""
+    instead of a flat drop — a flat drop (or another rule) tends to cut every
+    position early, capping the best wins at a few percent."""
     if peak_pnl >= 20.0:
         return max(14.0, peak_pnl * 0.70)
     if peak_pnl >= 10.0:
@@ -848,12 +851,28 @@ def main():
             floor_pct = trailing_floor_pct(peak_pnl, trailing_drop_pct)
             print(f"ℹ️ Trailing TP active: Peak PnL {peak_pnl:.2f}% | Current PnL {pnl_pct:.2f}% | Ratchet floor: {floor_pct:.2f}%")
             if pnl_pct <= floor_pct:
-                close_reason = f"Trailing Take-Profit hit (Peak: {peak_pnl:.2f}%, Current: {pnl_pct:.2f}% <= ratchet floor {floor_pct:.2f}%)"
+                # Gap-through grace: a "take-profit" that realizes a loss means price
+                # wicked through the floor between monitor ticks (BABYANSEM peaked
+                # +3.31% and TP-closed at -2.07%). Give one extra tick to recover;
+                # close on the next tick if still below the floor. Slow bleeds close
+                # one cycle later; single-tick wicks survive. Emergency SL unaffected.
+                if pnl_pct < TRAILING_MIN_LOCK_PCT and not meta.get("trailing_grace_used", False):
+                    meta["trailing_grace_used"] = True
+                    if not is_dry_run_stored:
+                        run_command(f"redis-cli set \"sol:dlmm:position:{pos_addr}\" '{json.dumps(meta)}'")
+                    print(f"⏳ Trailing TP gap-through: PnL {pnl_pct:.2f}% below floor {floor_pct:.2f}% AND below +{TRAILING_MIN_LOCK_PCT}% lock — one-tick grace before close")
+                else:
+                    close_reason = f"Trailing Take-Profit hit (Peak: {peak_pnl:.2f}%, Current: {pnl_pct:.2f}% <= ratchet floor {floor_pct:.2f}%)"
+            elif meta.get("trailing_grace_used", False):
+                # Recovered above the floor — re-arm the grace for the next gap.
+                meta["trailing_grace_used"] = False
+                if not is_dry_run_stored:
+                    run_command(f"redis-cli set \"sol:dlmm:position:{pos_addr}\" '{json.dumps(meta)}'")
 
         # 2. Hard Stop-Loss Check. Grace is conditional: only a young position that is
         # still in range AND earning hard (fee/TVL >= 10%) may ride a breach of the SL,
-        # and never below the emergency floor. The old unconditional 15m grace let
-        # ALON-SOL ride to -24%; wallet history shows five >11% losses through it.
+        # and never below the emergency floor. An unconditional grace window lets
+        # dumping positions ride far past the SL before the next tick closes them.
         emergency_floor_pct = stop_loss_pct - EMERGENCY_SL_BUFFER_PCT
         age_minutes_sl = (now - meta.get("deployed_at", now)) / 60.0
         if pnl_pct <= emergency_floor_pct:

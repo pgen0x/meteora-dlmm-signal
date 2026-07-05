@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Casual screening `MinFeeTVL` lowered 0.3 → 0.1. The discovery API's
+  `fee_tvl_ratio` is scoped to the queried timeframe, so for the 30m casual
+  window 0.3 demanded a ~14.4%/day fee pace and passed ~0 pools outside meme
+  frenzies (live probe: 30m median ratio ~0.01%). Diverges intentionally from
+  the Python pipeline's `max(0.3, 0.15)` — see the comment in `screen.go`.
+- Scanner cycle log now appends a per-gate reject tally
+  (`rejects[fee/TVL=36 non-SOL_pool=12 ...]`) so screening behavior is
+  observable without a custom probe.
+- Trailing take-profit gained a one-tick gap-through grace: when PnL wicks
+  below both the ratchet floor and the +0.3% round-trip-cost lock between
+  monitor ticks, the close is deferred one cycle instead of realizing a loss
+  labeled "take-profit". Slow bleeds still close one tick later; the
+  emergency stop-loss floor is unaffected.
+- Template and asset copy scrubbed of instance-specific references (agent
+  name, wallet-history stats) — the repo is public; deployment personalizes
+  via the profile.
+
 ### Added
 - `dlmm_reconcile.py`: audits the local close journal against the Meteora
   portfolio API (ground truth) — flags unjournaled closes and PnL divergences.
@@ -22,11 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - Trailing take-profit now uses a profit-ratchet floor (peak ≥5% locks +2%,
   ≥10% locks +6%, ≥20% locks 70% of peak) instead of a flat drop from peak;
-  SOUL trigger lowered 5% → 3% (wallet history: the 5% trigger activated on
-  1 of 208 positions).
+  SOUL trigger lowered 5% → 3% (close-history analysis showed the 5% trigger
+  almost never activated).
 - Hard-SL grace period is now conditional (young AND in-range AND
   fee/TVL ≥ 10%) instead of unconditional 15 minutes — the unconditional
-  grace let positions ride to -24% before the SL fired.
+  grace let dumping positions ride far past the SL before it fired.
 - Emergency close reasons can no longer be overwritten by softer rules
   (pumped-above / OOR / low-yield) that fire in the same cycle.
 
