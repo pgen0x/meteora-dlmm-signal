@@ -82,13 +82,16 @@ func (s *Scanner) modes() []meteora.ModeParams {
 	if s.cfg.EnableMultiday {
 		out = append(out, meteora.Multiday)
 	}
+	if s.cfg.EnableTurnover {
+		out = append(out, meteora.Turnover)
+	}
 	return out
 }
 
 // Run blocks, polling on PollInterval until ctx is cancelled.
 func (s *Scanner) Run(ctx context.Context) {
-	log.Printf("scanner: started (interval=%v, casual=%v, multiday=%v, momentum=%v)",
-		s.cfg.PollInterval, s.cfg.EnableCasual, s.cfg.EnableMultiday, s.cfg.EnableMomentumGate)
+	log.Printf("scanner: started (interval=%v, casual=%v, multiday=%v, turnover=%v, momentum=%v)",
+		s.cfg.PollInterval, s.cfg.EnableCasual, s.cfg.EnableMultiday, s.cfg.EnableTurnover, s.cfg.EnableMomentumGate)
 
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()

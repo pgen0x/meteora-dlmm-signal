@@ -35,6 +35,17 @@ MODE_DEFAULTS = {
         "TIMEFRAME": "24h",
         "MAX_POSITIONS": 2,
     },
+    # Fee-capture mode: small high-base-fee (1%+) pools with fast TVL turnover.
+    # Signals come from the Go daemon's turnover screen (internal/meteora/screen.go);
+    # the 30m-window fee_tvl_ratio floor 0.15 ~= 7.2%/day pace.
+    "turnover": {
+        "MIN_TVL_USD": 5000.0,
+        "MIN_FEE_TVL_24H": 0.15,
+        "MIN_MCAP_USD": 1000000.0,
+        "MIN_HOLDERS": 500,
+        "TIMEFRAME": "30m",
+        "MAX_POSITIONS": 2,
+    },
 }
 
 MIN_BINS_BELOW = 40
@@ -588,7 +599,7 @@ def main():
     parser.add_argument("--strategy", type=str, default=None, help="Override SOUL.md strategy (spot, custom_ratio_spot, single_sided_reseed, fee_compounding, partial_harvest)")
     parser.add_argument("--pool", type=str, default=None, help="Deploy a specific pool address instead of auto-selecting winner")
     parser.add_argument("--from-signal", dest="from_signal", type=str, default=None, help="JSON of a pre-screened candidate record from the mdtb signal daemon. Skips discovery+screen and deploys this exact pool; live gates (holding/cooldown/momentum/rent) still run.")
-    parser.add_argument("--mode", type=str, default="multiday", choices=["casual", "multiday"], help="Pipeline mode: casual (30m, 2-6h plays) or multiday (24h, 24h+ holds)")
+    parser.add_argument("--mode", type=str, default="multiday", choices=["casual", "multiday", "turnover"], help="Pipeline mode: casual (30m, 2-6h plays), multiday (24h, 24h+ holds) or turnover (30m, high-fee fee-capture plays)")
     cli = parser.parse_args()
 
     mode = cli.mode
