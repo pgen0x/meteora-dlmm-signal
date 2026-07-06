@@ -2,7 +2,7 @@
 
 Before any DLMM pool is ingested or monitored, these rules and parameters are applied.
 
-Pipeline supports two modes with **isolated position budgets** — casual positions do NOT block multiday slots.
+Pipeline supports three modes with **isolated position budgets** — each mode's positions do NOT block the other modes' slots.
 
 ### Casual Mode Parameters (30m timeframe — volume spike plays, hold 2-6h)
 *   Casual Min TVL: $5,000
@@ -17,6 +17,15 @@ Pipeline supports two modes with **isolated position budgets** — casual positi
 *   Multiday Min Mcap: $1,000,000
 *   Multiday Min Holders: 1,000
 *   Multiday Max Positions: 3
+
+### Turnover Mode Parameters (30m timeframe — fee-capture on small high-fee pools, hold hours)
+*   Turnover Min TVL: $5,000 / Max TVL: $300,000
+*   Turnover Min Fee/TVL (30m window): 0.15% (~7%/day pace)
+*   Turnover Min Base Fee: 1.0% (degen fee tier; fee income is the thesis, not price)
+*   Turnover Min Mcap: $1,000,000
+*   Turnover Min Holders: 500
+*   Turnover Max Positions: 2
+*   Prefer tight ranges around active bin (spot/custom_ratio_spot) — profit is fee_pct × turnover, so stay in range; exit on turnover decay, not price targets
 
 ### Shared Ingestion Gates
 *   Minimum Base Organic Score: 75

@@ -339,7 +339,7 @@ def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_f
     for r in report_rows:
         age_h = int(r["age_minutes"] // 60)
         age_m = int(r["age_minutes"] % 60)
-        age_str = f"{r['age_minutes']:.0f} min (~{age_h}h {age_m:02d}m)" if age_h > 0 else f"{r['age_minutes']:.0f} min"
+        age_str = f"{age_h}h{age_m:02d}m" if age_h > 0 else f"{r['age_minutes']:.0f}m"
         range_str = "🟢 In Range" if r["in_range"] else f"🔴 OOR {r['oor_minutes']:.0f}m"
         risk = []
         if r["triggered_rules"]:
@@ -372,29 +372,29 @@ def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_f
         # rich-message path (config platforms.telegram.extra.rich_messages:
         # true). Tables trigger _needs_rich_rendering -> sendRichMessage, so
         # they render as a real table with no MarkdownV2 flattening/escapes.
+        # Compact layout: 4 merged rows instead of 12, and only ⚠️ risk
+        # bullets are printed — a healthy position shows just table + summary.
+        pnl_usd_str = ""
+        if sol_price_usd:
+            pnl_usd = (r['pnl_sol'] * sol_price_usd) if r.get('pnl_sol') is not None else (r['size_sol'] * (r['pnl_pct'] / 100) * sol_price_usd)
+            pnl_usd_str = f" (${pnl_usd:+.2f})"
+        fees_usd_str = f" (${r['unclaimed_fees_sol'] * sol_price_usd:.2f})" if sol_price_usd else ""
+        size_str = f"{r['size_sol']:.4f}".rstrip('0').rstrip('.')
+        warnings = [b for b in risk if b.startswith("⚠️")]
         lines += [
             "",
             "---",
             "",
-            f"### {r['pair']}",
+            f"### {r['pair']} ({r['mode']})",
             f"`{r['position']}`",
             "",
             "| Metric | Value |",
             "|--------|-------|",
-            f"| Mode | {r['mode']} |",
-            f"| PnL | {r['pnl_pct']:+.2f}% |",
-            *([ f"| PnL (USD) | ${(r['pnl_sol'] * sol_price_usd) if r.get('pnl_sol') is not None else (r['size_sol'] * (r['pnl_pct']/100) * sol_price_usd):+.2f} |" ] if sol_price_usd else []),
-            f"| Range Status | {range_str} |",
-            f"| Age | {age_str} |",
-            f"| Fee/TVL (24h) | {r['fee_per_tvl_24h']:.2f}% |",
-            f"| Unclaimed Fees | {r['unclaimed_fees_sol']:.4f} SOL" + (f" (${r['unclaimed_fees_sol'] * sol_price_usd:.2f})" if sol_price_usd else "") + " |",
-            f"| Position Size | {r['size_sol']} SOL |",
-            f"| Entry Price | {r['entry_price']:.8f} |",
-            f"| Current Price | {r['pool_price']:.8f} |",
-            f"| Peak PnL | {r['peak_pnl']:+.2f}% |",
-            "",
-            "**Risk:**",
-        ] + [f"- {b}" for b in risk] + [
+            f"| PnL | {r['pnl_pct']:+.2f}%{pnl_usd_str} · peak {r['peak_pnl']:+.2f}% |",
+            f"| Range | {range_str} · age {age_str} |",
+            f"| Fee/TVL 24h | {r['fee_per_tvl_24h']:.2f}% · unclaimed {r['unclaimed_fees_sol']:.4f} SOL{fees_usd_str} |",
+            f"| Size | {size_str} SOL @ {r['entry_price']:.8f} → {r['pool_price']:.8f} |",
+        ] + [f"- {b}" for b in warnings] + [
             "",
             f"→ {summary}",
         ]

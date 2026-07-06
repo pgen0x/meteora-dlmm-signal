@@ -81,7 +81,7 @@ Every element of `payload` is one candidate pool with these fields:
 
 | Field | Meaning |
 |-------|---------|
-| `mode` | `casual` (30m plays) or `multiday` (24h+ holds) — same for every element; drives which budget/params the agent uses |
+| `mode` | `casual` (30m plays), `multiday` (24h+ holds) or `turnover` (30m fee-capture on small high-fee pools) — same for every element; drives which budget/params the agent uses |
 | `timeframe` | discovery timeframe the pool trended on |
 | `pool` | Meteora DLMM pool address |
 | `name` | pair name (e.g. `CATWIF-SOL`) |
@@ -95,6 +95,9 @@ Every element of `payload` is one candidate pool with these fields:
 | `bin_step` | pool bin step |
 | `organic_score` / `mcap` / `holders` | base-token quality |
 | `top_holders_pct` / `dev_balance_pct` | supply concentration (already gated) |
+| `fee_pct` | pool base fee % (turnover mode gates ≥ 1%; other modes report it ungated) |
+| `volume_tvl_ratio` | window volume / TVL turnover (turnover mode gates ≥ 3) |
+| `swap_count` / `unique_traders` | window activity — wash-trade guards (turnover mode gates ≥ 20 / ≥ 15) |
 | `score` | daemon's ranking score (higher = stronger candidate) |
 
 To deploy, the agent passes the chosen element's **full JSON record** to
@@ -106,7 +109,8 @@ gates below already ran) and runs only the final live gates before deploy.
 Only pools passing **all** of these are emitted:
 
 - SOL-paired; TVL ≥ mode floor; fee/TVL ≥ mode floor; daily fee ≥ mode floor
-- `0 < volatility ≤ 15`; organic ≥ 60; mcap ≥ mode floor; holders ≥ mode floor
+- `0 < volatility ≤ 15`; organic ≥ mode floor (60 casual/multiday, 50 turnover); mcap ≥ mode floor; holders ≥ mode floor
+- turnover mode only: TVL ≤ $300k; base fee ≥ 1%; volume/TVL ≥ 3; swaps ≥ 20; unique traders ≥ 15 (30m window)
 - fee/TVL change ≥ −40%; top-10 ≤ 60%; dev ≤ 20%
 - no freeze/mint authority; `is_verified` not false; no critical/warning flags
 - (if enabled) not dumping: 5m > −5%, 1h > −15%, 6h > −12%, 24h > −25%
