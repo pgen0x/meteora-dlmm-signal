@@ -35,13 +35,16 @@ first mediocre pool a dumb cron finds.
 
 ## Why this exists
 
-Blind time-based screening (a cron that scans every 30m) deploys into whatever
-happens to trend at that minute — weak selection. This daemon watches
-Meteora's pool-discovery API *continuously* and, each cycle, emits every pool
-that crosses all quality gates as one batch. Sending the whole set (instead of
-first-come per-pool) lets your agent compare candidates and pick the
-strongest — no mediocre early pool grabs a slot the best pool wanted — off
-fresh data instead of stale cron snapshots.
+Most pool screeners run on a fixed schedule and deploy into whatever happens
+to be trending at that moment, grabbing the first pool that clears their
+filters. Both habits cost money: stale snapshots miss short-lived fee
+opportunities, and first-match selection lets a mediocre pool take the slot a
+stronger one deserved.
+
+This daemon instead watches Meteora's pool-discovery API *continuously* and,
+each cycle, emits every pool that crosses all quality gates as one batch. Your
+AI agent sees the full set side by side and deploys only the strongest
+candidate — always off fresh data.
 
 It runs entirely on Meteora's **public pool-discovery API** — no third-party
 accounts, API keys, or scraping required to source signals.
@@ -53,9 +56,9 @@ accounts, API keys, or scraping required to source signals.
 - **Batch signalling** — one HMAC-signed webhook per cycle carries *every*
   qualifying pool, so your agent ranks the set instead of racing to grab the
   first one.
-- **Two isolated screening modes** — `casual` (30m, volume-spike plays) and
-  `multiday` (24h, quality holds) with independent thresholds and position
-  budgets.
+- **Three isolated screening modes** — `casual` (30m, volume-spike plays),
+  `multiday` (24h, quality holds) and `turnover` (30m, fee-capture plays on
+  small high-base-fee pools) with independent thresholds and position budgets.
 - **Layered risk gates** — TVL, fee/TVL, market cap, holder count, organic
   score, top-10/dev supply concentration, mint/freeze authority, Jupiter
   shield status, and a best-effort DexScreener downtrend filter.
@@ -175,17 +178,43 @@ The daemon is stateless except for its dedup set (in-memory by default; point
 
 ## What gets screened
 
-Two isolated modes, each with its own budget in the agent:
+Three isolated modes, each with its own budget in the agent:
 
-| Mode | Timeframe | Min TVL | Min fee/TVL | Min mcap | Min holders | Min fees/day |
-|------|-----------|---------|-------------|----------|-------------|--------------|
-| `casual`   | 30m | $5k  | 0.3% | $250k | 500  | $20  |
-| `multiday` | 24h | $50k | 1.0% | $1M   | 1000 | $150 |
+| Mode | Timeframe | Min TVL | Min fee/TVL (window) | Min mcap | Min holders | Min fees/day |
+|------|-----------|---------|----------------------|----------|-------------|--------------|
+| `casual`   | 30m | $5k  | 0.1%  | $250k | 500  | $20  |
+| `multiday` | 24h | $50k | 1.0%  | $1M   | 1000 | $150 |
+| `turnover` | 30m | $5k  | 0.15% | $1M   | 500  | $25  |
 
-Shared gates (both modes): SOL-paired · `0 < volatility ≤ 15` · organic ≥ 60 ·
-fee/TVL change ≥ −40% · top-10 ≤ 60% · dev ≤ 20% · no freeze/mint authority ·
-`is_verified` not false · no critical warnings · (optional) not dumping
-(5m > −5%, 1h > −15%, 6h > −12%, 24h > −25%).
+Shared gates (all modes): SOL-paired · `0 < volatility ≤ 15` · organic score
+floor · fee/TVL change ≥ −40% · top-10 ≤ 60% · dev ≤ 20% · no freeze/mint
+authority · `is_verified` not false · no critical warnings · (optional) not
+dumping (5m > −5%, 1h > −15%, 6h > −12%, 24h > −25%).
+
+### Turnover mode
+
+While `casual`/`multiday` chase trending pools, `turnover` targets the niche
+they never see: **small pools (TVL $5k–$300k) with degen base fees (≥1%)
+turning their TVL over fast**. The thesis is fee capture, not price — fee
+income is `fee_pct × turnover` and isn't capped by the monitor's trailing
+take-profit, so a $50k pool doing 5× volume/TVL at a 2% fee out-earns a
+"better" trending pool.
+
+Extra gates on top of the shared set: TVL ≤ $300k · pool base fee ≥ 1% ·
+volume/TVL ≥ 3 per 30m window · ≥ 20 swaps and ≥ 15 unique traders in-window
+(wash-trade guard — this is what lets the organic floor relax to 50) · fee/TVL
+≥ 0.15% per 30m (~7.2%/day pace). Discovery queries `category=all` sorted by
+`fee:desc` instead of trending.
+
+**Enable it** in the daemon's `.env` (off by default):
+
+```bash
+ENABLE_TURNOVER=true
+```
+
+then restart `./mdtb`. Signals arrive with `"mode": "turnover"`; the agent
+prompt and `dlmm_pipeline.py --mode turnover` already handle the mode end to
+end (2 position slots, tight-range `custom_ratio_spot` preferred).
 
 See [`docs/SIGNAL_SCHEMA.md`](docs/SIGNAL_SCHEMA.md) for the exact webhook payload.
 
@@ -199,7 +228,7 @@ All daemon config is via environment (see `.env.example`):
 | `POLL_INTERVAL` | How often to poll each enabled timeframe |
 | `HERMES_WEBHOOK_URL` / `HERMES_WEBHOOK_SECRET` | Where signals go, HMAC secret |
 | `REDIS_ADDR` / `REDIS_SEEN_KEY` / `SEEN_TTL` | Dedup store (empty `REDIS_ADDR` = in-memory) |
-| `ENABLE_CASUAL` / `ENABLE_MULTIDAY` | Toggle each screening mode |
+| `ENABLE_CASUAL` / `ENABLE_MULTIDAY` / `ENABLE_TURNOVER` | Toggle each screening mode (`turnover` off by default) |
 | `ENABLE_MOMENTUM_GATE` | DexScreener downtrend filter (fails open) |
 
 ## Repo layout
