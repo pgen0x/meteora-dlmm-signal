@@ -653,10 +653,23 @@ def main():
         # "--pool ... not found in valid candidates. Aborting." The live gates below
         # (open positions, cooldown, momentum, bin-array rent) still run.
         try:
-            candidates = [json.loads(cli.from_signal)]
+            signal_record = json.loads(cli.from_signal)
         except Exception as e:
             print(f"Aborting: --from-signal is not valid JSON: {e}")
             sys.exit(1)
+        # The record must be one payload element (docs/SIGNAL_SCHEMA.md), not the
+        # whole signal or its payload array. Validate the keys the pipeline
+        # accesses unconditionally so a malformed record aborts here with a clear
+        # message instead of a KeyError deep in ranking/deploy.
+        if isinstance(signal_record, list):
+            print("Aborting: --from-signal got an array; pass ONE payload element (a single pool record)")
+            sys.exit(1)
+        required = ("pool", "name", "base_mint", "base_symbol", "tvl", "volatility", "score")
+        missing = [k for k in required if k not in signal_record]
+        if missing:
+            print(f"Aborting: --from-signal record missing required fields: {', '.join(missing)} (see docs/SIGNAL_SCHEMA.md)")
+            sys.exit(1)
+        candidates = [signal_record]
         print(f"Using signalled candidate {candidates[0].get('name')} ({candidates[0].get('pool')}) — discovery/screen skipped")
         pools = []
     else:
