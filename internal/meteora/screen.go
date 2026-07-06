@@ -20,6 +20,18 @@ type ModeParams struct {
 	MinQuoteOrganic float64 // quote-token organic floor (ported from Meridian)
 	MinBinStep      int     // DLMM bin-step floor (0 disables the gate)
 	MaxBinStep      int     // DLMM bin-step ceiling (0 disables the gate)
+
+	// Turnover-mode gates, all zero-disabled so Casual/Multiday are unaffected.
+	MaxTVL           float64 // TVL ceiling (bias small pools where our share matters)
+	MinFeePct        float64 // pool base fee % floor (degen fee tiers are 1-5%)
+	MinVolTVLRatio   float64 // volume/TVL turnover floor for the timeframe window
+	MinSwapCount     float64 // swaps in window (wash-trade guard, with MinUniqueTraders)
+	MinUniqueTraders float64 // unique traders in window
+
+	// Discovery query knobs. Empty = the historical defaults ("trending", API
+	// default sort) so Casual/Multiday queries are byte-identical to before.
+	Category string
+	SortBy   string
 }
 
 // Casual and Multiday mirror the two isolated budgets in the pipeline.
@@ -42,6 +54,29 @@ var (
 		MinTVL: 50000, MinFeeTVL: 1.0, MinMcap: 1000000, MinHolders: 1000,
 		MinDailyFee: 150, MinOrganic: 60, MinQuoteOrganic: 60,
 		MinBinStep: 80, MaxBinStep: 125,
+	}
+
+	// Turnover is NOT in the Python pipeline — it is this daemon's own mode,
+	// targeting the niche the other two never see: small pools (TVL $5k-$300k)
+	// with degen base fees (>=1%) turning their TVL over fast. Fee income is
+	// fee_pct x turnover and is not capped by the monitor's trailing TP, so
+	// this is the profit-maximizing screen. swap_count + unique_traders guard
+	// against single-bot wash volume, letting organic relax to 50.
+	//
+	// Thresholds calibrated live 2026-07-05 against the 30m window: top fee
+	// earners showed fee_tvl_ratio 0.1-0.3 (0.16-0.31 among qualifiers),
+	// volume/TVL 2-15, swaps 15-80, traders 10-50; this exact filter set
+	// matched 6 pools (best paying $382/30m on $128k TVL, ~14%/day pace).
+	// MinFeeTVL 0.15/30m ~= 7.2%/day pace. Bin band widened to 250: high-fee
+	// launch pools cluster at bin step 100-400.
+	Turnover = ModeParams{
+		Mode: "turnover", Timeframe: "30m", TfMinutes: 30,
+		MinTVL: 5000, MinFeeTVL: 0.15, MinMcap: 1000000, MinHolders: 500,
+		MinDailyFee: 25, MinOrganic: 50, MinQuoteOrganic: 60,
+		MinBinStep: 80, MaxBinStep: 250,
+		MaxTVL: 300000, MinFeePct: 1.0, MinVolTVLRatio: 3.0,
+		MinSwapCount: 20, MinUniqueTraders: 15,
+		Category: "all", SortBy: "fee:desc",
 	}
 )
 
@@ -117,6 +152,23 @@ func Screen(p Pool, mp ModeParams) (*Candidate, string) {
 		return nil, fmt.Sprintf("yield declining %.0f%%", p.FeeTVLRatioChangePct)
 	}
 
+	// Turnover-mode gates (zero-disabled for the other modes).
+	if mp.MaxTVL > 0 && p.TVL > mp.MaxTVL {
+		return nil, fmt.Sprintf("TVL $%.0f > $%.0f cap", p.TVL, mp.MaxTVL)
+	}
+	if mp.MinFeePct > 0 && p.FeePct < mp.MinFeePct {
+		return nil, fmt.Sprintf("base fee %.2f%% < %.2f%%", p.FeePct, mp.MinFeePct)
+	}
+	if mp.MinVolTVLRatio > 0 && p.VolumeTVLRatio < mp.MinVolTVLRatio {
+		return nil, fmt.Sprintf("volume/TVL %.2f < %.2f", p.VolumeTVLRatio, mp.MinVolTVLRatio)
+	}
+	if mp.MinSwapCount > 0 && p.SwapCount < mp.MinSwapCount {
+		return nil, fmt.Sprintf("swaps %.0f < %.0f", p.SwapCount, mp.MinSwapCount)
+	}
+	if mp.MinUniqueTraders > 0 && p.UniqueTraders < mp.MinUniqueTraders {
+		return nil, fmt.Sprintf("traders %.0f < %.0f", p.UniqueTraders, mp.MinUniqueTraders)
+	}
+
 	// Supply-concentration safety gates.
 	if base.TopHoldersPct > 60.0 {
 		return nil, fmt.Sprintf("top10 own %.1f%% (>60%%)", base.TopHoldersPct)
@@ -188,6 +240,10 @@ func Screen(p Pool, mp ModeParams) (*Candidate, string) {
 		DailyFeeUSD:          dailyFeeUSD,
 		Volatility:           p.Volatility,
 		BinStep:              p.DlmmParams.BinStep,
+		FeePct:               p.FeePct,
+		VolumeTVLRatio:       p.VolumeTVLRatio,
+		SwapCount:            p.SwapCount,
+		UniqueTraders:        p.UniqueTraders,
 		OrganicScore:         base.OrganicScore,
 		Mcap:                 base.MarketCap,
 		Holders:              base.Holders,

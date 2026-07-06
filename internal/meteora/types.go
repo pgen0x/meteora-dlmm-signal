@@ -51,6 +51,10 @@ type Pool struct {
 	FeeActiveTVLRatio    float64    `json:"fee_active_tvl_ratio"`
 	FeeTVLRatioChangePct float64    `json:"fee_tvl_ratio_change_pct"`
 	VolumeActiveTVLRatio float64    `json:"volume_active_tvl_ratio"`
+	VolumeTVLRatio       float64    `json:"volume_tvl_ratio"`
+	FeePct               float64    `json:"fee_pct"`
+	SwapCount            float64    `json:"swap_count"`
+	UniqueTraders        float64    `json:"unique_traders"`
 	UniqueLPs            float64    `json:"unique_lps"`
 	PositionsCreated     float64    `json:"positions_created"`
 	Volatility           float64    `json:"volatility"`
@@ -88,6 +92,10 @@ type Candidate struct {
 	DailyFeeUSD          float64 `json:"daily_fee_usd"`
 	Volatility           float64 `json:"volatility"`
 	BinStep              int     `json:"bin_step"`
+	FeePct               float64 `json:"fee_pct"`
+	VolumeTVLRatio       float64 `json:"volume_tvl_ratio"`
+	SwapCount            float64 `json:"swap_count"`
+	UniqueTraders        float64 `json:"unique_traders"`
 	OrganicScore         float64 `json:"organic_score"`
 	Mcap                 float64 `json:"mcap"`
 	Holders              int     `json:"holders"`

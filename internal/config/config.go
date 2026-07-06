@@ -25,6 +25,7 @@ type Config struct {
 	// only the enable toggles live here.
 	EnableCasual   bool
 	EnableMultiday bool
+	EnableTurnover bool
 
 	// EnableMomentumGate fetches DexScreener momentum to reject downtrends
 	// before emitting (matches the Python downtrend gate). Best-effort.
@@ -74,6 +75,7 @@ func Load() Config {
 		SeenTTL:            getdur("SEEN_TTL", 24*time.Hour),
 		EnableCasual:       getbool("ENABLE_CASUAL", true),
 		EnableMultiday:     getbool("ENABLE_MULTIDAY", true),
+		EnableTurnover:     getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
 		EnableMomentumGate: getbool("ENABLE_MOMENTUM_GATE", true),
 	}
 }
