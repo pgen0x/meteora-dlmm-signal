@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.1.0...v1.2.0) (2026-07-07)
+
+
+### Features
+
+* **hermes:** weights-aware pick, audit hard-reject, lone-candidate rule ([f5c7daf](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/f5c7daf0ddf75b1b41d0cfb96e27068b1ef352b2))
+* **scanner,skill:** degen fallback, pool-history payload, low-yield pool cooldown ([63a7363](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/63a736385b754a66096c6fad69c8b2a0c072ad3e))
+* **scanner:** audit gate, lone-candidate conviction gate, degen payload fields ([129dbb5](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/129dbb5705ea26f89327b1cd3b5d39b3645c6cec))
+* **skill:** pool memory, repeat-deploy cooldown, darwinian signal weights ([e14bd9c](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/e14bd9cbd558841f97f35433561d0bf58f0bdee3))
+
+
+### Bug Fixes
+
+* **hermes:** forbid execute_code wrappers, treat empty stdout as failure ([7f829af](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/7f829af6c33f47f04d7c176639c8de2702a06137))
+* **install:** preserve profile secret/delivery/model on subscription re-merge ([b6e5f71](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/b6e5f71eebfeb79dda93045c445b5ccf7fad4232))
+
 ## [1.1.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.0.0...v1.1.0) (2026-07-06)
 
 
