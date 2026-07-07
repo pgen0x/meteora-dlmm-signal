@@ -52,6 +52,8 @@ type Pool struct {
 	FeeTVLRatioChangePct float64    `json:"fee_tvl_ratio_change_pct"`
 	VolumeActiveTVLRatio float64    `json:"volume_active_tvl_ratio"`
 	VolumeTVLRatio       float64    `json:"volume_tvl_ratio"`
+	VolumeWindow         float64    `json:"volume"`
+	FeeWindow            float64    `json:"fee"`
 	FeePct               float64    `json:"fee_pct"`
 	SwapCount            float64    `json:"swap_count"`
 	UniqueTraders        float64    `json:"unique_traders"`
@@ -115,6 +117,14 @@ type Candidate struct {
 	// agent must treat missing as unknown, not zero.
 	BotHoldersPct *float64 `json:"bot_holders_pct,omitempty"`
 	GlobalFeesSOL *float64 `json:"global_fees_sol,omitempty"`
+
+	// Pool memory summary from the monitor's close journal
+	// (sol:dlmm:history:pool:<pool>). The pipeline still hard-skips pools
+	// whose history nets negative; these fields let the agent ALSO weigh a
+	// mixed record when picking between candidates. Absent = no history
+	// (or in-memory dedup backend without Redis).
+	PriorCloses    *int     `json:"prior_closes,omitempty"`
+	PriorNetPnlSOL *float64 `json:"prior_net_pnl_sol,omitempty"`
 }
 
 // boolOr dereferences an optional bool, returning def when the pointer is nil

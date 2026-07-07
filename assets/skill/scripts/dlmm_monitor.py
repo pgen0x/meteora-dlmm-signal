@@ -1167,6 +1167,15 @@ def main():
                 run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex {cooldown_secs}")
                 print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cooldown_secs // 3600}h (reason: {'dump/momentum' if is_dump_close else 'normal exit'})")
 
+                # Low-yield exits also cool the POOL itself for 4h (ported from
+                # Meridian's low-yield pool cooldown): the symbol cooldown above
+                # expires in 1h, but a pool whose fee flow already decayed won't
+                # recover that fast — without this we re-enter the same fee-dead
+                # pool on the next signal and churn.
+                if close_reason.startswith("Low yield"):
+                    run_command(f"redis-cli set \"sol:dlmm:cooldown:pool:{pool}\" \"{close_reason[:120]}\" ex 14400")
+                    print(f"🚫 Pool cooldown set 4h (low yield): {pool}")
+
                 # Auto-swap base token back to SOL (unless skip_swap is active)
                 base_mint = meta.get("base_mint")
                 skip_swap = (strategy == "single_sided_reseed")

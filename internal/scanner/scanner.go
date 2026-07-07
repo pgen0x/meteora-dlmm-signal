@@ -181,6 +181,15 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 			}
 		}
 
+		// Pool memory summary: surface this pool's journaled close record so
+		// the agent weighs a mixed history when picking (the pipeline's
+		// deterministic ">=2 closes net negative" skip still applies at
+		// deploy time — this is the advisory layer on top).
+		if n, pnl, ok := s.seen.PoolCloseStats(ctx, cand.Pool); ok {
+			cand.PriorCloses = &n
+			cand.PriorNetPnlSOL = &pnl
+		}
+
 		batch = append(batch, cand)
 		batchKeys = append(batchKeys, poolKey)
 	}

@@ -101,6 +101,7 @@ Every element of `payload` is one candidate pool with these fields:
 | `score` | conviction score 0–100 (Degen Score: geometric mean of trading / LP-activity / fee / liquidity efficiency sub-scores, normalized to a 30m window — a high score requires balance, no single metric can fake it) |
 | `active_tvl` / `volume_active_tvl_ratio` / `unique_lps` / `positions_created` | the Degen Score inputs, exposed so the agent sees *why* a score is high or low |
 | `bot_holders_pct` / `global_fees_sol` | Jupiter audit enrichment (audit gate). **May be absent** — absent means the audit fetch failed (fail-open); treat as unknown, never as zero |
+| `prior_closes` / `prior_net_pnl_sol` | pool memory summary from the monitor's close journal (`sol:dlmm:history:pool:<pool>`, last 10 closes / 30d). **May be absent** — absent means no history (or non-Redis dedup backend), not a clean record. Negative net PnL = this pool cost us before |
 
 To deploy, the agent passes the chosen element's **full JSON record** to
 `dlmm_pipeline.py --from-signal '<record>'`, which skips re-screening (the

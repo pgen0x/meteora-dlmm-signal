@@ -61,7 +61,8 @@ Two modes with **isolated position budgets** (2 slots each, max 4 total):
 *   Trailing TP: activates at SOUL `Trailing TP Trigger`; exit floor is a profit ratchet (peak ≥5% locks +2%, ≥10% locks +6%, ≥20% locks 70% of peak; below that, flat `Trailing TP Drop` from peak).
 *   Emergency SL floor: 3pp below `Hard Stop-Loss` — always closes immediately, bypassing the SL grace, AI holds, and indicator timing. SL grace itself only applies to a young (<15m) in-range position with fee/TVL ≥ 10%.
 *   Note: `--report-only` is read-only — never claims/closes/redeploys (incl. fee_compounding & partial_harvest strategies) — with ONE exception: an emergency close (SL floor breach / thin liquidity) executes even in report-only, because the cron runs report-only and the agent hop adds minutes. Pass `--no-enforce` for pure reporting.
-*   Every close is journaled to `<profile>/memories/dlmm_closes.jsonl` (uniform schema, API-verified PnL, carries the entry-signal snapshot) AND to per-pool memory `sol:dlmm:history:pool:<POOL>` (last 10 closes, 30d expiry — the pipeline's "past losses" skip gate reads this). Audit journal vs Meteora portfolio API ground truth with `python3 .../scripts/dlmm_reconcile.py [--days 30]`.
+*   Every close is journaled to `<profile>/memories/dlmm_closes.jsonl` (uniform schema, API-verified PnL, carries the entry-signal snapshot) AND to per-pool memory `sol:dlmm:history:pool:<POOL>` (last 10 closes, 30d expiry — the pipeline's "past losses" skip gate reads this; the daemon ships a summary as `prior_closes`/`prior_net_pnl_sol` on future signals for that pool). Audit journal vs Meteora portfolio API ground truth with `python3 .../scripts/dlmm_reconcile.py [--days 30]`.
+*   A "Low yield" close also sets a 4h pool cooldown (`sol:dlmm:cooldown:pool:<POOL>`) — fee flow that already decayed doesn't recover within the 1h symbol cooldown, so block the pool itself from immediate re-entry.
 *   Each run ends by triggering `dlmm_weights.py --quiet` (self-guarded, never fails the monitor).
 
 **Close GUARD (overrides all exits above):** NEVER close when `in_range` AND `fee_per_tvl_24h >= 10%` AND no hard rule triggered. Do not discretionarily close an empty-`triggered_rules` position unless `5m <= -3%` OR `break_even_days >= 5`. Hard floor `pnl < -20%` and thin-liquidity always close. (Full policy: SOUL.md §9 "Close GUARD".) The `--override-close` path enforces this in code and refuses a healthy close unless `--force`.
@@ -96,7 +97,7 @@ Two modes with **isolated position budgets** (2 slots each, max 4 total):
 | `sol:dlmm:position:<ADDR>:oor_since` | permanent | Timestamp when the position was first detected out of range |
 | `sol:dlmm:pnl:daily:YYYY-MM-DD` | 7d | Realized yields tracker: total_sol, count_exits |
 | `sol:dlmm:cooldown:<SYMBOL>` | 1-72h | Token re-entry cooldown set on close (dump closes 2h, others 1h; repeat losses escalate 24h/72h) |
-| `sol:dlmm:cooldown:pool:<POOL>` | 12h | Pool-level cooldown (repeat-deploy churn guard) |
+| `sol:dlmm:cooldown:pool:<POOL>` | 4-12h | Pool-level cooldown: 12h repeat-deploy churn guard (pipeline), 4h low-yield close (monitor) |
 | `sol:dlmm:deploys:<POOL>` | 24h | Rolling deploy counter per pool; 3rd deploy sets the pool cooldown |
 | `sol:dlmm:history:pool:<POOL>` | 30d | Last 10 close outcomes per pool (`ts`, `pnl_pct`, `pnl_sol`, `mode`, `reason`) — pipeline's "past losses" skip gate |
 | `sol:dlmm:loss_streak:<SYMBOL>` | 7d | Consecutive-loss counter per token, escalates the symbol cooldown |

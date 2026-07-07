@@ -272,8 +272,21 @@ func degenScore(p Pool, tfMinutes float64) float64 {
 	}
 	tfScale := degenRefMinutes / tfMinutes
 
-	tradingRatio := p.VolumeActiveTVLRatio * tfScale
-	feeRatio := p.FeeActiveTVLRatio * tfScale
+	// When the API omits the precomputed ratios, derive them from the raw
+	// window volume/fee (mirrors Meridian). Without this, a missing ratio
+	// zeroes the sub-score, zeroes the whole degen score, and the caller
+	// falls back to the additive score — which silently bypasses the
+	// lone-candidate conviction gate (additive scores sit near 75+).
+	tradingRatio := p.VolumeActiveTVLRatio
+	if tradingRatio <= 0 {
+		tradingRatio = p.VolumeWindow / la
+	}
+	feeRatio := p.FeeActiveTVLRatio
+	if feeRatio <= 0 {
+		feeRatio = p.FeeWindow / la
+	}
+	tradingRatio *= tfScale
+	feeRatio *= tfScale
 	lpActivity := (p.UniqueLPs + p.PositionsCreated) * tfScale
 
 	sTrading := clamp01(tradingRatio / degenTargetVolRatio)
