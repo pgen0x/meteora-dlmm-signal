@@ -1150,28 +1150,52 @@ def main():
                 base_symbol_cd = meta.get("base_symbol", pair.split("-")[0]).upper()
                 reason_lower = close_reason.lower()
                 is_dump_close = any(kw in reason_lower for kw in ("trailing", "dump", "stop-loss", "stop_loss", "sell pressure", "momentum"))
-                cooldown_secs = 7200 if is_dump_close else 3600  # 2h dump, 1h other
-                # Clean profitable casual exit: the pool is often still hot after a
-                # 30m-window harvest — a full 1h block just forfeits re-entry. Dump
-                # closes and losses keep the longer cooldowns (and the loss-streak
-                # escalation below only fires on realized_sol < 0 anyway).
-                if not is_dump_close and realized_sol > 0 and meta.get("mode", "multiday") == "casual":
-                    cooldown_secs = 1800
                 cooldown_key = f"sol:dlmm:cooldown:{base_symbol_cd}"
                 loss_streak_key = f"sol:dlmm:loss_streak:{base_symbol_cd}"
-                if realized_sol < 0:
-                    # Track repeat losses within a 7-day window and escalate cooldown duration
-                    run_command(f"redis-cli incr \"{loss_streak_key}\"")
-                    run_command(f"redis-cli expire \"{loss_streak_key}\" 604800")
-                    streak_str, _, _ = run_command(f"redis-cli get \"{loss_streak_key}\"")
-                    loss_streak = int(streak_str) if streak_str and streak_str.strip().lstrip('-').isdigit() else 1
-                    if loss_streak >= 2:
-                        cooldown_secs = 259200 if loss_streak >= 3 else 86400  # 3+ losses→72h, 2 losses→24h
-                        print(f"🔴 REPEAT LOSS #{loss_streak} in 7d — escalating {base_symbol_cd} cooldown to {cooldown_secs // 3600}h")
+
+                # Turnover OOR rebalance (Meridian-style re-center): a turnover
+                # position drifting out of range is a re-center opportunity, not
+                # an exit signal — the pool was picked for fee flow, and fee flow
+                # needs in-range liquidity. Guards: plain OOR closes only (never
+                # stop-loss / thin-liquidity / dump), shallow drawdown, and max 3
+                # re-centers per pool per 24h so a genuinely trending pool still
+                # exits instead of being chased forever.
+                rebalance_count_key = f"sol:dlmm:rebalance_count:{pool}"
+                _rc_str, _, _ = run_command(f"redis-cli get \"{rebalance_count_key}\"")
+                rebalances_24h = int(_rc_str) if _rc_str and _rc_str.strip().isdigit() else 0
+                is_turnover_rebalance = (
+                    meta.get("mode") == "turnover"
+                    and strategy != "single_sided_reseed"  # reseed path redeploys on its own — never both
+                    and close_reason.startswith("Out of Range")
+                    and not emergency_close
+                    and not is_dump_close
+                    and pnl_pct > -8.0
+                    and rebalances_24h < 3
+                )
+
+                if is_turnover_rebalance:
+                    print(f"♻️ Turnover rebalance eligible ({rebalances_24h}/3 in 24h) — skipping re-entry cooldown for {base_symbol_cd}")
                 else:
-                    run_command(f"redis-cli del \"{loss_streak_key}\"")  # reset streak on profit
-                run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex {cooldown_secs}")
-                print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cooldown_secs // 3600}h (reason: {'dump/momentum' if is_dump_close else 'normal exit'})")
+                    cooldown_secs = 7200 if is_dump_close else 3600  # 2h dump, 1h other
+                    # Clean profitable casual exit: the pool is often still hot after a
+                    # 30m-window harvest — a full 1h block just forfeits re-entry. Dump
+                    # closes and losses keep the longer cooldowns (and the loss-streak
+                    # escalation below only fires on realized_sol < 0 anyway).
+                    if not is_dump_close and realized_sol > 0 and meta.get("mode", "multiday") == "casual":
+                        cooldown_secs = 1800
+                    if realized_sol < 0:
+                        # Track repeat losses within a 7-day window and escalate cooldown duration
+                        run_command(f"redis-cli incr \"{loss_streak_key}\"")
+                        run_command(f"redis-cli expire \"{loss_streak_key}\" 604800")
+                        streak_str, _, _ = run_command(f"redis-cli get \"{loss_streak_key}\"")
+                        loss_streak = int(streak_str) if streak_str and streak_str.strip().lstrip('-').isdigit() else 1
+                        if loss_streak >= 2:
+                            cooldown_secs = 259200 if loss_streak >= 3 else 86400  # 3+ losses→72h, 2 losses→24h
+                            print(f"🔴 REPEAT LOSS #{loss_streak} in 7d — escalating {base_symbol_cd} cooldown to {cooldown_secs // 3600}h")
+                    else:
+                        run_command(f"redis-cli del \"{loss_streak_key}\"")  # reset streak on profit
+                    run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex {cooldown_secs}")
+                    print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cooldown_secs // 3600}h (reason: {'dump/momentum' if is_dump_close else 'normal exit'})")
 
                 # Low-yield exits also cool the POOL itself for 4h (ported from
                 # Meridian's low-yield pool cooldown): the symbol cooldown above
@@ -1254,7 +1278,49 @@ def main():
                                     print(f"Re-seeded position tracked: {new_pos}")
                     else:
                         print("No base token balance available to re-seed.")
-                
+
+                # Execute the turnover re-center: capital is back in SOL (the
+                # auto-swap above already liquidated the base side), so redeploy
+                # the same pool at the current active bin with the tight
+                # edge-weighted turnover shape. Deploy failure falls back to a
+                # normal 1h cooldown so the pool isn't silently forgotten.
+                if is_turnover_rebalance:
+                    run_command(f"redis-cli incr \"{rebalance_count_key}\"")
+                    run_command(f"redis-cli expire \"{rebalance_count_key}\" 86400")
+                    rebalance_cmd = f"{env_prefix}node {EXECUTOR_PATH} deploy {pool} 0 {size_sol} 20 0 bid_ask {params.get('SLIPPAGE_BPS', 1000)}"
+                    print(f"♻️ Turnover rebalance redeploy: {rebalance_cmd}")
+                    dep_res, dep_err = run_command_json(rebalance_cmd)
+                    if dep_res and dep_res.get("success"):
+                        new_pos = dep_res.get("position")
+                        ab_data, _ = run_command_json(f"node {EXECUTOR_PATH} active-bin {pool}")
+                        rb_price = float(ab_data.get("price", active_price)) if ab_data else active_price
+                        rb_bin = ab_data.get("binId") if ab_data else None
+                        tracking_data = {
+                            "pool": pool,
+                            "pair": pair,
+                            "base_mint": base_mint,
+                            "base_symbol": meta.get("base_symbol"),
+                            "entry_price": rb_price,
+                            "entry_bin": rb_bin,
+                            "bins_below": 20,
+                            "bins_above": 0,
+                            "size_sol": size_sol,
+                            "deployed_at": now,
+                            "tx_hash": dep_res.get("txHash"),
+                            "strategy": "turnover_rebalance",
+                            "mode": "turnover",
+                            "amount_x": 0,
+                            "amount_y": size_sol
+                        }
+                        if not is_dry_run_stored:
+                            run_command(f"redis-cli set \"sol:dlmm:position:{new_pos}\" '{json.dumps(tracking_data)}'")
+                            run_command(f"redis-cli sadd \"sol:dlmm:active_positions\" \"{new_pos}\"")
+                        swap_report += f"\n**Rebalanced**: re-centered {size_sol} SOL at the current price (re-center #{rebalances_24h + 1}/3 in 24h). New position: {new_pos}"
+                        print(f"♻️ Turnover rebalance deployed: {new_pos}")
+                    else:
+                        print(f"❌ Turnover rebalance deploy failed: {dep_err or (dep_res or {}).get('error')} — position stays closed, normal cooldown applies")
+                        run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex 3600")
+
                 # Telegram report formatting
                 wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
                 is_dry = close_res.get("dryRun") or close_res.get("dry_run") == True

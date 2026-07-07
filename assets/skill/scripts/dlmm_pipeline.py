@@ -576,10 +576,21 @@ def get_scaled_thresholds(timeframe, min_fee_tvl):
 STAGE1_MAX_SOL = 1.0
 STAGE2_MAX_SOL = 10.0
 
-def select_stage_strategy(deploy_sol, volatility, bin_step):
+def select_stage_strategy(deploy_sol, volatility, bin_step, mode=None):
     """Return (stage_label, bins_below, bins_above, strategy_type) for the capital stage.
-    SOL-only deploy (no pre-swap). Maps deploy size -> the strategy that fits it."""
+    SOL-only deploy (no pre-swap). Maps deploy size -> the strategy that fits it.
+
+    Bin shape: spot spreads liquidity evenly; bid_ask weights it toward the
+    range edges. For a SOL-only deploy every strategy fills bid-side bins
+    below the active price, so bid_ask concentrates size deeper into the dip
+    — bigger fills and more fees on the wicks we are positioned to catch."""
     bin_step_pct = max(bin_step, 1) / 100.0
+    if mode == "turnover":
+        # Fee-capture pools oscillate hard around the active bin; edge-weighted
+        # liquidity (bid_ask) earns more per swing than flat spot at equal width.
+        phys = int((volatility * 1.2) / bin_step_pct) if bin_step_pct > 0 else 20
+        bins = max(15, min(30, phys or 20))
+        return ("turnover_tight_bidask", bins, bins, "bid_ask")
     if deploy_sol < STAGE1_MAX_SOL:
         phys = int((volatility * 1.2) / bin_step_pct) if bin_step_pct > 0 else 20
         bins = max(15, min(30, phys or 20))
@@ -590,7 +601,9 @@ def select_stage_strategy(deploy_sol, volatility, bin_step):
         bins = max(MIN_BINS_BELOW, min(MAX_BINS_BELOW, max(phys, lin // 2)))
         return ("stage2_medium_spot", bins, bins, "spot")
     else:
-        return ("stage3_wide_spot", MAX_BINS_BELOW, 0, "spot")
+        # Wide single-side dip catch: bid_ask stacks the deep bins, so a hard
+        # flush fills into size instead of the thin tail spot would leave there.
+        return ("stage3_wide_bidask", MAX_BINS_BELOW, 0, "bid_ask")
 
 def main():
     import argparse
@@ -914,7 +927,7 @@ def main():
         deployable_candidates = []
         for c in valid_candidates:
             if soul_strat == "stage_aware":
-                _, bb, _, _ = select_stage_strategy(deploy_sol, c["volatility"], c.get("bin_step", 100))
+                _, bb, _, _ = select_stage_strategy(deploy_sol, c["volatility"], c.get("bin_step", 100), mode=mode)
             else:
                 c_bin_step_pct = max(c.get("bin_step", 100), 1) / 100.0
                 c_phys = int((c["volatility"] * 2.5) / c_bin_step_pct)
@@ -1062,7 +1075,7 @@ def main():
 
     elif strategy == "stage_aware":
         # Capital-stage selection: strategy + bin width scale with deploy size (SOL-only).
-        stage_label, bins_below, bins_above, strategy_type = select_stage_strategy(deploy_sol, vol, bin_step)
+        stage_label, bins_below, bins_above, strategy_type = select_stage_strategy(deploy_sol, vol, bin_step, mode=mode)
         print(f"Strategy: stage_aware -> {stage_label} ({deploy_sol} SOL). "
               f"bins_below: {bins_below}, bins_above: {bins_above}, type: {strategy_type}.")
 
