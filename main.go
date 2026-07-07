@@ -21,7 +21,7 @@ import (
 // Version follows Semantic Versioning (semver.org). Bumped automatically by
 // release-please from conventional commits — see CONTRIBUTING.md. Release
 // builds also override it via -ldflags "-X main.Version=..." (GoReleaser).
-var Version = "1.2.0" // x-release-please-version
+var Version = "1.3.0" // x-release-please-version
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
