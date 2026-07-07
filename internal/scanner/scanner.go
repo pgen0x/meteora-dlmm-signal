@@ -123,7 +123,7 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 
 	// Per-poll tally so a quiet cycle logs "scanned N, 0 passed" instead of
 	// nothing — distinguishes "working, nothing qualified" from "API empty".
-	var screened, deduped, momRejected, auditRejected, loneHeld, pvpFlagged int
+	var screened, cooldownBlocked, deduped, momRejected, auditRejected, loneHeld, pvpFlagged int
 	rejects := map[string]int{}
 
 	// Batch mode: collect every fresh, momentum-passing candidate this cycle and
@@ -139,6 +139,19 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 			continue
 		}
 		screened++
+
+		// Re-entry cooldown gate: dlmm_monitor.py sets a per-token cooldown on
+		// every close (1-2h base, escalating to 24h/72h on repeat losses).
+		// Until now this was only enforced at deploy time, so a batch full of
+		// cooling tokens wasted the whole signal and crowded out eligible
+		// pools. Checked BEFORE MarkIfNew so the pool re-signals as soon as
+		// its cooldown lapses instead of staying silenced for SEEN_TTL.
+		if cd := s.seen.CooldownRemaining(ctx, cand.BaseSymbol); cd > 0 {
+			cooldownBlocked++
+			log.Printf("scanner[%s]: %s (%s) in re-entry cooldown (%s left)",
+				mp.Mode, cand.BaseSymbol, cand.Pool[:8], cd.Round(time.Minute))
+			continue
+		}
 
 		// Dedup BEFORE the momentum fetch so we don't hit DexScreener for
 		// pools we've already emitted this window.
@@ -231,8 +244,8 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		}
 	}
 
-	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d audit_rejected=%d pvp_flagged=%d lone_held=%d sent=%d",
-		mp.Mode, len(pools), screened, deduped, momRejected, auditRejected, pvpFlagged, loneHeld, sent)
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d cooldown_blocked=%d deduped=%d mom_rejected=%d audit_rejected=%d pvp_flagged=%d lone_held=%d sent=%d",
+		mp.Mode, len(pools), screened, cooldownBlocked, deduped, momRejected, auditRejected, pvpFlagged, loneHeld, sent)
 	if len(rejects) > 0 {
 		line += " rejects[" + rejectSummary(rejects) + "]"
 	}
