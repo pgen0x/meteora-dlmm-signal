@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.2.0...v1.3.0) (2026-07-07)
+
+
+### Features
+
+* **scanner:** cooldown-aware screening + shorter casual harvest cooldown ([0e52fc7](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/0e52fc7ea5281c11013cffb466dc65a2b2ad2e78))
+* **scanner:** cooldown-aware screening, PVP rival detection, casual harvest cooldown ([59b79c3](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/59b79c38c8a584ed0f3bc165060bc746d24e1911))
+
 ## [1.2.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.1.0...v1.2.0) (2026-07-07)
 
 
