@@ -41,6 +41,12 @@ type Config struct {
 	// be emitted. Prevents "only option so deploy it" entries on weak solo
 	// candidates. 0 disables the gate.
 	LoneMinScore float64
+
+	// EnablePVPCheck searches for an established same-symbol rival token with
+	// its own live DLMM pool and flags contested candidates (is_pvp + rival
+	// stats) in the payload. Advisory only — never rejects. Best-effort,
+	// fail-open like the momentum/audit gates.
+	EnablePVPCheck bool
 }
 
 func getenv(key, def string) string {
@@ -102,5 +108,6 @@ func Load() Config {
 		EnableMomentumGate: getbool("ENABLE_MOMENTUM_GATE", true),
 		EnableAuditGate:    getbool("ENABLE_AUDIT_GATE", true),
 		LoneMinScore:       getfloat("LONE_MIN_SCORE", 50),
+		EnablePVPCheck:     getbool("ENABLE_PVP_CHECK", true),
 	}
 }

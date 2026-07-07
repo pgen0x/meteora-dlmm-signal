@@ -66,6 +66,9 @@ accounts, API keys, or scraping required to source signals.
 - **Conviction scoring** — every signal carries a 0–100 Degen Score (balanced
   trading/LP/fee/liquidity efficiency); single-candidate cycles must clear a
   conviction floor, so "only option" never auto-reads as "good option".
+- **PVP rival detection** — candidates whose ticker is contested by an
+  established same-symbol token with its own live DLMM pool are flagged with
+  the rival's stats, so the agent avoids LPing the losing side of a ticker war.
 - **Learning loop** — deploys snapshot their entry signals, closes journal the
   outcome per pool (skip pools that already lost money, cool down churned
   pools), and a darwinian recalc boosts/decays signal weights the deploy agent
@@ -239,6 +242,7 @@ All daemon config is via environment (see `.env.example`):
 | `ENABLE_CASUAL` / `ENABLE_MULTIDAY` / `ENABLE_TURNOVER` | Toggle each screening mode (`turnover` off by default) |
 | `ENABLE_MOMENTUM_GATE` | DexScreener downtrend filter (fails open) |
 | `ENABLE_AUDIT_GATE` | Jupiter token-audit gate: rejects >30% bot holders, ships bot % + global fees in the signal (fails open) |
+| `ENABLE_PVP_CHECK` | same-symbol rival detection: flags candidates contested by an established token with its own live DLMM pool — advisory `is_pvp` + rival stats, never rejects (fails open) |
 | `LONE_MIN_SCORE` | Conviction floor for single-candidate batches (degen score 0–100, default 50, 0 disables) |
 
 ## Repo layout

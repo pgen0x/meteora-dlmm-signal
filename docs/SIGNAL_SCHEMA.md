@@ -102,6 +102,7 @@ Every element of `payload` is one candidate pool with these fields:
 | `active_tvl` / `volume_active_tvl_ratio` / `unique_lps` / `positions_created` | the Degen Score inputs, exposed so the agent sees *why* a score is high or low |
 | `bot_holders_pct` / `global_fees_sol` | Jupiter audit enrichment (audit gate). **May be absent** — absent means the audit fetch failed (fail-open); treat as unknown, never as zero |
 | `prior_closes` / `prior_net_pnl_sol` | pool memory summary from the monitor's close journal (`sol:dlmm:history:pool:<pool>`, last 10 closes / 30d). **May be absent** — absent means no history (or non-Redis dedup backend), not a clean record. Negative net PnL = this pool cost us before |
+| `is_pvp` + `pvp_rival_name` / `pvp_rival_mint` / `pvp_rival_pool` / `pvp_rival_tvl` / `pvp_rival_holders` / `pvp_rival_fees_sol` | same-symbol rival detection: an established token (≥500 holders, ≥30 SOL fees) sharing this ticker has its own live DLMM pool (≥$5k TVL) — a ticker war. Advisory flag, never a daemon reject. **Absent** = no rival found or check failed (fail-open) |
 
 To deploy, the agent passes the chosen element's **full JSON record** to
 `dlmm_pipeline.py --from-signal '<record>'`, which skips re-screening (the
