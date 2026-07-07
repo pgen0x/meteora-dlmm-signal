@@ -98,7 +98,10 @@ Every element of `payload` is one candidate pool with these fields:
 | `fee_pct` | pool base fee % (turnover mode gates ≥ 1%; other modes report it ungated) |
 | `volume_tvl_ratio` | window volume / TVL turnover (turnover mode gates ≥ 3) |
 | `swap_count` / `unique_traders` | window activity — wash-trade guards (turnover mode gates ≥ 20 / ≥ 15) |
-| `score` | daemon's ranking score (higher = stronger candidate) |
+| `score` | conviction score 0–100 (Degen Score: geometric mean of trading / LP-activity / fee / liquidity efficiency sub-scores, normalized to a 30m window — a high score requires balance, no single metric can fake it) |
+| `active_tvl` / `volume_active_tvl_ratio` / `unique_lps` / `positions_created` | the Degen Score inputs, exposed so the agent sees *why* a score is high or low |
+| `bot_holders_pct` / `global_fees_sol` | Jupiter audit enrichment (audit gate). **May be absent** — absent means the audit fetch failed (fail-open); treat as unknown, never as zero |
+| `prior_closes` / `prior_net_pnl_sol` | pool memory summary from the monitor's close journal (`sol:dlmm:history:pool:<pool>`, last 10 closes / 30d). **May be absent** — absent means no history (or non-Redis dedup backend), not a clean record. Negative net PnL = this pool cost us before |
 
 To deploy, the agent passes the chosen element's **full JSON record** to
 `dlmm_pipeline.py --from-signal '<record>'`, which skips re-screening (the
@@ -114,5 +117,11 @@ Only pools passing **all** of these are emitted:
 - fee/TVL change ≥ −40%; top-10 ≤ 60%; dev ≤ 20%
 - no freeze/mint authority; `is_verified` not false; no critical/warning flags
 - (if enabled) not dumping: 5m > −5%, 1h > −15%, 6h > −12%, 24h > −25%
+- (if enabled) Jupiter audit: bot holders ≤ 30% (fail-open when the audit is unavailable)
+- lone-candidate conviction gate: a cycle producing exactly one fresh pool only
+  emits it when `score ≥ LONE_MIN_SCORE` (default 50) — a weak solo candidate is
+  held back (and un-deduped) so it can compete inside a future, richer batch
 
-The agent still does final live checks (audit, portfolio slots, balance) before deploying.
+The agent still does final live checks (audit, portfolio slots, balance,
+cooldowns — including the pool-level repeat-deploy cooldown — and learned
+signal weights) before deploying.

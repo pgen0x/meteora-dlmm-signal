@@ -30,6 +30,17 @@ type Config struct {
 	// EnableMomentumGate fetches DexScreener momentum to reject downtrends
 	// before emitting (matches the Python downtrend gate). Best-effort.
 	EnableMomentumGate bool
+
+	// EnableAuditGate fetches the Jupiter token audit (bot-holder %, global
+	// fees) for every fresh candidate and hard-rejects bot-farmed tokens
+	// before emitting. Best-effort, fail-open like the momentum gate.
+	EnableAuditGate bool
+
+	// LoneMinScore is the conviction floor for single-candidate batches: when
+	// a cycle produces exactly one fresh pool, it must score at least this to
+	// be emitted. Prevents "only option so deploy it" entries on weak solo
+	// candidates. 0 disables the gate.
+	LoneMinScore float64
 }
 
 func getenv(key, def string) string {
@@ -49,6 +60,18 @@ func getbool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func getfloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }
 
 func getdur(key string, def time.Duration) time.Duration {
@@ -77,5 +100,7 @@ func Load() Config {
 		EnableMultiday:     getbool("ENABLE_MULTIDAY", true),
 		EnableTurnover:     getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
 		EnableMomentumGate: getbool("ENABLE_MOMENTUM_GATE", true),
+		EnableAuditGate:    getbool("ENABLE_AUDIT_GATE", true),
+		LoneMinScore:       getfloat("LONE_MIN_SCORE", 50),
 	}
 }

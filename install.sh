@@ -93,9 +93,20 @@ import json,sys
 dst,src,profile=sys.argv[1],sys.argv[2],sys.argv[3]
 d=json.load(open(dst))
 s=json.loads(open(src).read().replace("__PROFILE__",profile))
-d.update(s)
+# Preserve per-profile config on re-install: an existing entry's secret,
+# delivery target, model and enabled flag are live operator-set values —
+# only the prompt (and any brand-new fields) should follow the repo. The
+# repo's placeholders must never clobber real values.
+PRESERVE=("secret","deliver","deliver_extra","model","enabled")
+for name,entry in s.items():
+    old=d.get(name)
+    if isinstance(old,dict):
+        for k in PRESERVE:
+            if k in old:
+                entry[k]=old[k]
+    d[name]=entry
 json.dump(d,open(dst,'w'),indent=2)
-print("   merged dlmm-signal into existing webhook_subscriptions.json")
+print("   merged dlmm-signal into existing webhook_subscriptions.json (kept existing secret/delivery/model)")
 PY
 else
   sed "s#__PROFILE__#$PROFILE#g" "$SUB_SRC" > "$SUB_DST"

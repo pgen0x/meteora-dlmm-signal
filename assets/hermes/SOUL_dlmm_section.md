@@ -31,6 +31,13 @@ Pipeline supports three modes with **isolated position budgets** — each mode's
 *   Minimum Base Organic Score: 75
 *   Slippage: 1000 (bps, e.g. 10% slippage tolerance)
 
+### Entry Conviction & Learning
+*   Lone-Candidate Conviction Floor: 50 (degen score 0–100; a signal cycle producing exactly ONE fresh pool only emits it above this — "only option" is not "good option")
+*   Audit Gate: reject > 30% bot holders (daemon-side); reject global fees < 30 SOL when the value is present (agent-side — bundled/scam line; absent = unknown, never reject on absence)
+*   Pool Memory: never re-enter a pool whose last closes (>= 2) net out negative PnL
+*   Repeat-Deploy Cooldown: 3rd deploy into the same pool within 24h → 12h pool cooldown
+*   Signal Weights: darwinian — entry signals of every close are correlated with realized PnL (60d window, recalc <= 1×/6h); the deploy pick prioritizes candidates strong on high-weight signals (`sol:dlmm:signal_weights`)
+
 ### Active Strategy Configuration
 *   Strategy: stage_aware (options: spot, custom_ratio_spot, single_sided_reseed, fee_compounding, partial_harvest, stage_aware)
 *   Indicators Enabled: true (enable indicator timing checks before entry/exit)

@@ -123,7 +123,7 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 
 	// Per-poll tally so a quiet cycle logs "scanned N, 0 passed" instead of
 	// nothing — distinguishes "working, nothing qualified" from "API empty".
-	var screened, deduped, momRejected int
+	var screened, deduped, momRejected, auditRejected, loneHeld int
 	rejects := map[string]int{}
 
 	// Batch mode: collect every fresh, momentum-passing candidate this cycle and
@@ -166,8 +166,45 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 			}
 		}
 
+		// Jupiter audit gate (best-effort, fail-open, same seen semantics as
+		// momentum). Hard-rejects bot-farmed tokens; otherwise enriches the
+		// candidate with bot % / global fees so the agent judges with the
+		// audit on-screen instead of re-fetching it.
+		if s.cfg.EnableAuditGate {
+			if a, ok := meteora.FetchAudit(cand.BaseMint); ok {
+				if r := meteora.AuditReject(a); r != "" {
+					auditRejected++
+					log.Printf("scanner[%s]: %s (%s) rejected on audit: %s", mp.Mode, cand.BaseSymbol, cand.Pool[:8], r)
+					continue
+				}
+				cand.ApplyAudit(a)
+			}
+		}
+
+		// Pool memory summary: surface this pool's journaled close record so
+		// the agent weighs a mixed history when picking (the pipeline's
+		// deterministic ">=2 closes net negative" skip still applies at
+		// deploy time — this is the advisory layer on top).
+		if n, pnl, ok := s.seen.PoolCloseStats(ctx, cand.Pool); ok {
+			cand.PriorCloses = &n
+			cand.PriorNetPnlSOL = &pnl
+		}
+
 		batch = append(batch, cand)
 		batchKeys = append(batchKeys, poolKey)
+	}
+
+	// Lone-candidate conviction gate: a single-pool batch removes the agent's
+	// ability to compare, and "only option" must not read as "good option".
+	// A solo candidate ships only when its score clears the conviction floor.
+	// The pool is unmarked so it can ride a future, richer batch (or re-pass
+	// alone once its score improves) instead of being silenced for SEEN_TTL.
+	if len(batch) == 1 && s.cfg.LoneMinScore > 0 && batch[0].Score < s.cfg.LoneMinScore {
+		log.Printf("scanner[%s]: lone candidate %s (%s) score %.1f < %.1f — held back",
+			mp.Mode, batch[0].BaseSymbol, batch[0].Pool[:8], batch[0].Score, s.cfg.LoneMinScore)
+		s.seen.Unmark(ctx, batchKeys[0])
+		loneHeld++
+		batch, batchKeys = nil, nil
 	}
 
 	sent := 0
@@ -185,8 +222,8 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		}
 	}
 
-	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d sent=%d",
-		mp.Mode, len(pools), screened, deduped, momRejected, sent)
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d audit_rejected=%d lone_held=%d sent=%d",
+		mp.Mode, len(pools), screened, deduped, momRejected, auditRejected, loneHeld, sent)
 	if len(rejects) > 0 {
 		line += " rejects[" + rejectSummary(rejects) + "]"
 	}

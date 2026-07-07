@@ -61,7 +61,15 @@ accounts, API keys, or scraping required to source signals.
   small high-base-fee pools) with independent thresholds and position budgets.
 - **Layered risk gates** — TVL, fee/TVL, market cap, holder count, organic
   score, top-10/dev supply concentration, mint/freeze authority, Jupiter
-  shield status, and a best-effort DexScreener downtrend filter.
+  shield status, a best-effort DexScreener downtrend filter, and a Jupiter
+  token-audit gate (bot-holder %, global fees paid).
+- **Conviction scoring** — every signal carries a 0–100 Degen Score (balanced
+  trading/LP/fee/liquidity efficiency); single-candidate cycles must clear a
+  conviction floor, so "only option" never auto-reads as "good option".
+- **Learning loop** — deploys snapshot their entry signals, closes journal the
+  outcome per pool (skip pools that already lost money, cool down churned
+  pools), and a darwinian recalc boosts/decays signal weights the deploy agent
+  reads on every pick.
 - **Fail-open by design** — gates with unreliable upstream data (verified
   status, momentum) default to *pass* instead of over-rejecting on missing
   fields.
@@ -230,6 +238,8 @@ All daemon config is via environment (see `.env.example`):
 | `REDIS_ADDR` / `REDIS_SEEN_KEY` / `SEEN_TTL` | Dedup store (empty `REDIS_ADDR` = in-memory) |
 | `ENABLE_CASUAL` / `ENABLE_MULTIDAY` / `ENABLE_TURNOVER` | Toggle each screening mode (`turnover` off by default) |
 | `ENABLE_MOMENTUM_GATE` | DexScreener downtrend filter (fails open) |
+| `ENABLE_AUDIT_GATE` | Jupiter token-audit gate: rejects >30% bot holders, ships bot % + global fees in the signal (fails open) |
+| `LONE_MIN_SCORE` | Conviction floor for single-candidate batches (degen score 0–100, default 50, 0 disables) |
 
 ## Repo layout
 

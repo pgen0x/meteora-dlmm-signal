@@ -110,6 +110,9 @@ def log_close(pool, pair, meta, pos_addr, pnl_pct, realized_sol, fee_per_tvl_24h
         "reason": reason,
         "txs": txs,
         "dry_run": bool(dry_run),
+        # Entry-time signal snapshot (written by dlmm_pipeline.py at deploy) —
+        # dlmm_weights.py correlates these with pnl_pct to learn signal weights.
+        "signal": meta.get("signal"),
     }
     try:
         path = os.path.join(PROFILE_DIR, "memories", "dlmm_closes.jsonl")
@@ -118,6 +121,22 @@ def log_close(pool, pair, meta, pos_addr, pnl_pct, realized_sol, fee_per_tvl_24h
             f.write(json.dumps(entry) + "\n")
     except Exception as e:
         print(f"⚠️ Failed to write close journal: {e}")
+    # Pool memory: per-pool close outcomes, read by dlmm_pipeline.py's
+    # "past losses" skip gate. Last 10 closes, 30-day expiry, live closes only.
+    if not dry_run:
+        try:
+            rec = json.dumps({
+                "ts": entry["ts"],
+                "pnl_pct": entry["pnl_pct"],
+                "pnl_sol": entry["pnl_sol"],
+                "mode": entry["mode"],
+                "reason": (reason or "")[:80],
+            })
+            run_command(f"redis-cli lpush \"sol:dlmm:history:pool:{pool}\" '{rec}'")
+            run_command(f"redis-cli ltrim \"sol:dlmm:history:pool:{pool}\" 0 9")
+            run_command(f"redis-cli expire \"sol:dlmm:history:pool:{pool}\" 2592000")
+        except Exception as e:
+            print(f"⚠️ Failed to write pool memory: {e}")
 
 def load_soul_dlmm_params():
     params = {
@@ -1148,6 +1167,15 @@ def main():
                 run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex {cooldown_secs}")
                 print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cooldown_secs // 3600}h (reason: {'dump/momentum' if is_dump_close else 'normal exit'})")
 
+                # Low-yield exits also cool the POOL itself for 4h (ported from
+                # Meridian's low-yield pool cooldown): the symbol cooldown above
+                # expires in 1h, but a pool whose fee flow already decayed won't
+                # recover that fast — without this we re-enter the same fee-dead
+                # pool on the next signal and churn.
+                if close_reason.startswith("Low yield"):
+                    run_command(f"redis-cli set \"sol:dlmm:cooldown:pool:{pool}\" \"{close_reason[:120]}\" ex 14400")
+                    print(f"🚫 Pool cooldown set 4h (low yield): {pool}")
+
                 # Auto-swap base token back to SOL (unless skip_swap is active)
                 base_mint = meta.get("base_mint")
                 skip_swap = (strategy == "single_sided_reseed")
@@ -1252,6 +1280,17 @@ TX | https://solscan.io/tx/{txs[0]}
         sol_price_usd = meteora_sol_price
         print(render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_fee_tvl_24h_limit, max_oor_minutes))
         print("MONITOR_REPORT:" + json.dumps({"positions": report_rows}))
+
+    # Darwinian signal-weights refresh. Self-guarded inside the script (recalcs
+    # at most every 6h and only with enough closed positions) — cheap no-op on
+    # most runs, and never allowed to fail the monitor.
+    try:
+        subprocess.run(
+            [sys.executable, os.path.join(SCRIPT_DIR, "dlmm_weights.py"), "--quiet"],
+            timeout=60,
+        )
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()

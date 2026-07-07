@@ -839,6 +839,26 @@ def main():
             ttl_mins = int(ttl_out) // 60 if ttl_out and ttl_out.lstrip("-").isdigit() else "?"
             print(f"Skipping {c['name']} - re-entry cooldown active ({ttl_mins}m remaining, reason: {cooldown_val[:60]})")
             continue
+        # Pool-level cooldown (repeat-deploy churn guard, set post-deploy below).
+        pool_cd, _, _ = run_command(f"redis-cli get \"sol:dlmm:cooldown:pool:{c['pool']}\"")
+        if pool_cd and pool_cd != "(nil)":
+            print(f"Skipping {c['name']} - pool cooldown active (reason: {pool_cd[:60]})")
+            continue
+        # Pool memory: closes on this exact pool are journaled to
+        # sol:dlmm:history:pool:<pool> by the monitor. Two or more past closes
+        # that net out negative = this pool has already cost us — hard skip.
+        # No history (fresh pool) passes untouched.
+        hist_raw, _, _ = run_command(f"redis-cli lrange \"sol:dlmm:history:pool:{c['pool']}\" 0 9")
+        if hist_raw and hist_raw != "(nil)":
+            past_pnls = []
+            for line in hist_raw.splitlines():
+                try:
+                    past_pnls.append(float(json.loads(line).get("pnl_pct", 0)))
+                except (ValueError, json.JSONDecodeError):
+                    continue
+            if len(past_pnls) >= 2 and sum(past_pnls) < 0:
+                print(f"Skipping {c['name']} - pool memory: {len(past_pnls)} past closes net {sum(past_pnls):+.1f}% PnL")
+                continue
         # Momentum screen across ALL candidates (not just deploy winner).
         # Filters dumping tokens before ranking so the winner isn't a falling knife.
         m5, h1, h6, h24 = get_momentum(c["base_mint"])
@@ -1154,13 +1174,33 @@ def main():
         "amount_x": amount_x,
         "amount_y": amount_y,
         "mode": mode,
+        # Entry-time signal snapshot — the monitor copies this into the close
+        # journal so dlmm_weights.py can learn which signals predict winners.
+        "signal": {k: winner.get(k) for k in (
+            "score", "organic_score", "fee_tvl_ratio", "fee_active_tvl_ratio",
+            "volatility", "mcap", "holders", "tvl", "fee_pct",
+            "volume_tvl_ratio", "swap_count", "unique_traders",
+            "bot_holders_pct", "global_fees_sol",
+        ) if winner.get(k) is not None},
     }
-    
+
     is_dry_run = res.get("dryRun") or (res.get("dry_run") == True)
     if not is_dry_run:
         run_command(f"redis-cli set \"sol:dlmm:position:{position_address}\" '{json.dumps(tracking_data)}'")
         run_command(f"redis-cli sadd \"sol:dlmm:active_positions\" \"{position_address}\"")
         print(f"Position saved to Redis: sol:dlmm:position:{position_address}")
+        # Repeat-deploy churn guard: 3+ deploys into the same pool inside 24h
+        # means we keep round-tripping it (deploy -> close -> re-signal) — put
+        # the POOL on a 12h cooldown, independent of the symbol cooldown.
+        deploys_key = f"sol:dlmm:deploys:{winner['pool']}"
+        count_out, _, _ = run_command(f"redis-cli incr \"{deploys_key}\"")
+        run_command(f"redis-cli expire \"{deploys_key}\" 86400")
+        try:
+            if int(count_out) >= 3:
+                run_command(f"redis-cli set \"sol:dlmm:cooldown:pool:{winner['pool']}\" \"repeat-deploy churn ({count_out} deploys in 24h)\" ex 43200")
+                print(f"🚫 Pool cooldown set: {count_out} deploys into {winner['name']} within 24h")
+        except (ValueError, TypeError):
+            pass
 
     wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
     status_label = "🧪 DRY RUN DEPLOY" if is_dry_run else "🚀 DEPLOYED"

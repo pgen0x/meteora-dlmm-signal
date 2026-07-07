@@ -52,6 +52,8 @@ type Pool struct {
 	FeeTVLRatioChangePct float64    `json:"fee_tvl_ratio_change_pct"`
 	VolumeActiveTVLRatio float64    `json:"volume_active_tvl_ratio"`
 	VolumeTVLRatio       float64    `json:"volume_tvl_ratio"`
+	VolumeWindow         float64    `json:"volume"`
+	FeeWindow            float64    `json:"fee"`
 	FeePct               float64    `json:"fee_pct"`
 	SwapCount            float64    `json:"swap_count"`
 	UniqueTraders        float64    `json:"unique_traders"`
@@ -102,6 +104,27 @@ type Candidate struct {
 	TopHoldersPct        float64 `json:"top_holders_pct"`
 	DevBalancePct        float64 `json:"dev_balance_pct"`
 	Score                float64 `json:"score"`
+
+	// Degen Score inputs, exposed so the agent sees WHY a score is high/low
+	// instead of trusting an opaque number.
+	ActiveTVL            float64 `json:"active_tvl"`
+	VolumeActiveTVLRatio float64 `json:"volume_active_tvl_ratio"`
+	UniqueLPs            float64 `json:"unique_lps"`
+	PositionsCreated     float64 `json:"positions_created"`
+
+	// Jupiter audit enrichment (audit gate). Pointers + omitempty: absent
+	// means the audit fetch failed or omitted the field (fail-open) — the
+	// agent must treat missing as unknown, not zero.
+	BotHoldersPct *float64 `json:"bot_holders_pct,omitempty"`
+	GlobalFeesSOL *float64 `json:"global_fees_sol,omitempty"`
+
+	// Pool memory summary from the monitor's close journal
+	// (sol:dlmm:history:pool:<pool>). The pipeline still hard-skips pools
+	// whose history nets negative; these fields let the agent ALSO weigh a
+	// mixed record when picking between candidates. Absent = no history
+	// (or in-memory dedup backend without Redis).
+	PriorCloses    *int     `json:"prior_closes,omitempty"`
+	PriorNetPnlSOL *float64 `json:"prior_net_pnl_sol,omitempty"`
 }
 
 // boolOr dereferences an optional bool, returning def when the pointer is nil

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -58,6 +59,31 @@ func (s *Seen) MarkIfNew(ctx context.Context, id string) (bool, error) {
 	}
 	s.mem[id] = now
 	return true, nil
+}
+
+// PoolCloseStats summarizes a pool's close journal written by dlmm_monitor.py
+// (sol:dlmm:history:pool:<pool> — last 10 closes, 30d TTL). Returns ok=false
+// when there is no history, no Redis backend, or the read fails: absent data
+// must read as "unknown", never as "clean record" (fail-open convention).
+func (s *Seen) PoolCloseStats(ctx context.Context, pool string) (closes int, netPnlSOL float64, ok bool) {
+	if s.rdb == nil {
+		return 0, 0, false
+	}
+	entries, err := s.rdb.LRange(ctx, "sol:dlmm:history:pool:"+pool, 0, 9).Result()
+	if err != nil || len(entries) == 0 {
+		return 0, 0, false
+	}
+	for _, e := range entries {
+		var rec struct {
+			PnlSOL float64 `json:"pnl_sol"`
+		}
+		if json.Unmarshal([]byte(e), &rec) != nil {
+			continue
+		}
+		closes++
+		netPnlSOL += rec.PnlSOL
+	}
+	return closes, netPnlSOL, closes > 0
 }
 
 // Unmark removes id from the seen set so a failed emit can retry on the next
