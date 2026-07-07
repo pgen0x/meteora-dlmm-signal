@@ -123,7 +123,7 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 
 	// Per-poll tally so a quiet cycle logs "scanned N, 0 passed" instead of
 	// nothing — distinguishes "working, nothing qualified" from "API empty".
-	var screened, deduped, momRejected, auditRejected, loneHeld int
+	var screened, deduped, momRejected, auditRejected, loneHeld, pvpFlagged int
 	rejects := map[string]int{}
 
 	// Batch mode: collect every fresh, momentum-passing candidate this cycle and
@@ -194,6 +194,15 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		batchKeys = append(batchKeys, poolKey)
 	}
 
+	// PVP rival check (advisory, fail-open): flag candidates whose symbol is
+	// contested by an established rival token with its own live DLMM pool, so
+	// the agent weighs the war before entering the weaker side. Runs on the
+	// final batch only — post-gate, post-dedup — to keep the request budget
+	// bounded (one symbol search per unique symbol per cycle).
+	if s.cfg.EnablePVPCheck && len(batch) > 0 {
+		pvpFlagged = meteora.EnrichPVP(batch)
+	}
+
 	// Lone-candidate conviction gate: a single-pool batch removes the agent's
 	// ability to compare, and "only option" must not read as "good option".
 	// A solo candidate ships only when its score clears the conviction floor.
@@ -222,8 +231,8 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		}
 	}
 
-	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d audit_rejected=%d lone_held=%d sent=%d",
-		mp.Mode, len(pools), screened, deduped, momRejected, auditRejected, loneHeld, sent)
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d mom_rejected=%d audit_rejected=%d pvp_flagged=%d lone_held=%d sent=%d",
+		mp.Mode, len(pools), screened, deduped, momRejected, auditRejected, pvpFlagged, loneHeld, sent)
 	if len(rejects) > 0 {
 		line += " rejects[" + rejectSummary(rejects) + "]"
 	}

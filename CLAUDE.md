@@ -43,6 +43,9 @@ one pass per enabled mode per `POLL_INTERVAL`.
   - `momentum.go` — best-effort DexScreener downtrend gate (fail-open).
   - `audit.go` — best-effort Jupiter token-audit gate (fail-open): hard-rejects
     >30% bot holders, enriches signals with bot % + global fees paid.
+  - `pvp.go` — best-effort same-symbol rival detection (fail-open, advisory):
+    flags candidates whose ticker is contested by an established token with
+    its own live DLMM pool (`is_pvp` + rival stats); never rejects.
   - `types.go` — JSON structs mirroring the discovery API response exactly.
 - `internal/store` — `Seen` dedup set: Redis (`SetNX`, one key + TTL per pool)
   or in-memory map. Empty `REDIS_ADDR` selects in-memory.

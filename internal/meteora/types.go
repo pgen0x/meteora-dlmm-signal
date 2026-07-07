@@ -125,6 +125,17 @@ type Candidate struct {
 	// (or in-memory dedup backend without Redis).
 	PriorCloses    *int     `json:"prior_closes,omitempty"`
 	PriorNetPnlSOL *float64 `json:"prior_net_pnl_sol,omitempty"`
+
+	// PVP (same-symbol rival) flag + rival stats (pvp.go). Absent/false means
+	// no established rival found OR the check failed (fail-open) — the flag is
+	// advisory for the agent's pick, never a daemon-side reject.
+	IsPVP           bool    `json:"is_pvp,omitempty"`
+	PVPRivalName    string  `json:"pvp_rival_name,omitempty"`
+	PVPRivalMint    string  `json:"pvp_rival_mint,omitempty"`
+	PVPRivalPool    string  `json:"pvp_rival_pool,omitempty"`
+	PVPRivalTVL     float64 `json:"pvp_rival_tvl,omitempty"`
+	PVPRivalHolders float64 `json:"pvp_rival_holders,omitempty"`
+	PVPRivalFeesSOL float64 `json:"pvp_rival_fees_sol,omitempty"`
 }
 
 // boolOr dereferences an optional bool, returning def when the pointer is nil
