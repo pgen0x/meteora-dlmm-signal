@@ -1151,6 +1151,12 @@ def main():
                 reason_lower = close_reason.lower()
                 is_dump_close = any(kw in reason_lower for kw in ("trailing", "dump", "stop-loss", "stop_loss", "sell pressure", "momentum"))
                 cooldown_secs = 7200 if is_dump_close else 3600  # 2h dump, 1h other
+                # Clean profitable casual exit: the pool is often still hot after a
+                # 30m-window harvest — a full 1h block just forfeits re-entry. Dump
+                # closes and losses keep the longer cooldowns (and the loss-streak
+                # escalation below only fires on realized_sol < 0 anyway).
+                if not is_dump_close and realized_sol > 0 and meta.get("mode", "multiday") == "casual":
+                    cooldown_secs = 1800
                 cooldown_key = f"sol:dlmm:cooldown:{base_symbol_cd}"
                 loss_streak_key = f"sol:dlmm:loss_streak:{base_symbol_cd}"
                 if realized_sol < 0:

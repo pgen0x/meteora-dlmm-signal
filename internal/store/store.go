@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,22 @@ func (s *Seen) PoolCloseStats(ctx context.Context, pool string) (closes int, net
 		netPnlSOL += rec.PnlSOL
 	}
 	return closes, netPnlSOL, closes > 0
+}
+
+// CooldownRemaining reports how long a token symbol is still under the
+// monitor's re-entry cooldown (sol:dlmm:cooldown:<SYMBOL>, written by
+// dlmm_monitor.py on every close). Zero means not cooling or unknown: the
+// in-memory backend and Redis errors read as "no cooldown" (fail-open) —
+// the deploy-time pipeline check stays the enforcing layer.
+func (s *Seen) CooldownRemaining(ctx context.Context, symbol string) time.Duration {
+	if s.rdb == nil || symbol == "" {
+		return 0
+	}
+	d, err := s.rdb.TTL(ctx, "sol:dlmm:cooldown:"+strings.ToUpper(symbol)).Result()
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // Unmark removes id from the seen set so a failed emit can retry on the next
