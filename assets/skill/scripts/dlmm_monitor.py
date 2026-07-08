@@ -8,6 +8,7 @@ import re
 import urllib.request
 from decimal import Decimal
 from local_indicators import check_local_indicators
+from tz_util import local_time_str
 
 METEORA_PORTFOLIO_API = "https://dlmm.datapi.meteora.ag/portfolio/open"
 
@@ -393,8 +394,8 @@ def render_status_report(report_rows, sol_price_usd, trailing_trigger_pct, min_f
     """Renders the fixed Telegram status template from report_rows. Used by both
     --report-only and live runs (for positions that end the cycle in HOLD) so the
     delivered format never depends on which code path produced the data."""
-    wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
-    lines = [f"{header_label} — {wib_str}", f"📊 Active Positions: {len(report_rows)}"]
+    ts_str = local_time_str()
+    lines = [f"{header_label} — {ts_str}", f"📊 Active Positions: {len(report_rows)}"]
     if not report_rows:
         lines.append("\nNo active positions. Bot is idle.")
     for r in report_rows:
@@ -1428,10 +1429,10 @@ def main():
                         run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex 3600")
 
                 # Telegram report formatting
-                wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
+                ts_str = local_time_str()
                 is_dry = close_res.get("dryRun") or close_res.get("dry_run") == True
                 status_label = "🧪 DRY RUN CLOSE" if is_dry else "🚨 POSITION CLOSED"
-                report = f"""{status_label} — {wib_str}
+                report = f"""{status_label} — {ts_str}
 {pair} {pos_addr}
 Exit Reason | {close_reason}
 Metric | Value

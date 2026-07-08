@@ -152,6 +152,8 @@ Next steps:
                                         # (defaults to public mainnet-beta RPC if unset)
        DLMM_ALERT_TARGET=telegram      # instant trade alerts via \`hermes send\`
                                         # ("platform" or "platform:chat_id"; empty disables)
+       DLMM_TZ=Asia/Jakarta            # report-card timezone (IANA name; empty = system zone)
+       DLMM_STATS_HOUR=09              # daily scoreboard send hour in DLMM_TZ (00-23)
   2. Edit $SUB_DST:
        - set "secret" (match HERMES_WEBHOOK_SECRET below)
        - set deliver_extra.chat_id to your channel

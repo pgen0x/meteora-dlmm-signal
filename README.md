@@ -187,6 +187,9 @@ SOLANA_RPC_URLS=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY,https://api.mai
 DLMM_ALERT_TARGET=telegram        # instant trade-event alerts (close/rebalance/compound)
                                   # sent script-side via `hermes send` — no LLM tokens.
                                   # "platform" or "platform:chat_id"; empty disables.
+DLMM_TZ=Asia/Jakarta              # timezone for every report-card timestamp (IANA name,
+                                  # e.g. America/New_York; empty/unset = system zone)
+DLMM_STATS_HOUR=09                # daily scoreboard send hour in DLMM_TZ (00-23, default 09)
 ```
 
 And the daemon's own `.env` (this repo's root):
@@ -282,6 +285,18 @@ install.sh                  wires assets into a Hermes profile + builds daemon
 `solana-web3` scripts into your profile instead of copying them — edits in
 this repo take effect in every installed profile immediately, no reinstall
 needed.
+
+### Performance scoreboard
+
+```bash
+python3 <profile>/skills/solana-dlmm/scripts/dlmm_stats.py [--hours 24] [--send]
+```
+
+Deterministic metlex-style card (closes, win rate, avg hold, realized PnL,
+fees-vs-IL split, volume churned, per-mode breakdown, rebalance-chain PnL)
+built from the Meteora portfolio API + close journal + Redis — no LLM. The
+monitor loop auto-sends it daily at 09:00 WIB via `hermes send` when
+`DLMM_ALERT_TARGET` is set.
 
 ## Example output
 
