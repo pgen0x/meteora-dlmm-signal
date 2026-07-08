@@ -24,12 +24,25 @@ cd "$SCRIPT_DIR" || exit 1
 # orphaned (no longer an active position), so this re-sweeps to liquidate it.
 SWEEP_EVERY=30
 i=0
+STATS_STAMP="/tmp/dlmm_stats_last_sent"
 while true; do
     "$PYTHON" "$SCRIPT_DIR/dlmm_monitor.py"
     i=$((i + 1))
     if [ "$i" -ge "$SWEEP_EVERY" ]; then
         "$PYTHON" "$SCRIPT_DIR/dlmm_monitor.py" --cleanup-tokens
         i=0
+    fi
+    # Daily scoreboard — deterministic dlmm_stats.py card via `hermes send`
+    # (zero LLM). Hour + timezone are operator-set (profile .env): DLMM_TZ
+    # (IANA name, empty = system zone) and DLMM_STATS_HOUR (00-23, default 09).
+    # Stamp file dedups to once per day.
+    if [ -n "${DLMM_TZ:-}" ]; then
+        hour_local=$(TZ="$DLMM_TZ" date +%H); today_local=$(TZ="$DLMM_TZ" date +%F)
+    else
+        hour_local=$(date +%H); today_local=$(date +%F)
+    fi
+    if [ "$hour_local" = "${DLMM_STATS_HOUR:-09}" ] && [ "$(cat "$STATS_STAMP" 2>/dev/null)" != "$today_local" ]; then
+        "$PYTHON" "$SCRIPT_DIR/dlmm_stats.py" --send && echo "$today_local" > "$STATS_STAMP"
     fi
     sleep 20
 done

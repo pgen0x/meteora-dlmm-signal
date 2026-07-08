@@ -14,9 +14,9 @@
     "schedule": {
       "kind": "cron",
       "expr": "0 21 * * *",
-      "display": "every day at 21:00 WIB"
+      "display": "every day at 21:00 (server time)"
     },
-    "schedule_display": "every day at 21:00 WIB",
+    "schedule_display": "every day at 21:00 (server time)",
     "enabled": true,
     "paused_at": null,
     "paused_reason": null,
@@ -48,7 +48,7 @@
   {
     "id": "sol_dlmm_journal_reconcile",
     "name": "DLMM Journal Reconciliation (weekly)",
-    "prompt": "You are a Solana Trading Specialist. Run the weekly DLMM journal reconciliation.\n\n**STEP 1: Run the reconciler**:\n```bash\npython3 __PROFILE__/skills/solana-dlmm/scripts/dlmm_reconcile.py --days 7\n```\n\n**STEP 2: Output a short card** (start your response directly with \"DLMM Journal Reconciliation — \"):\nDLMM Journal Reconciliation — <date WIB>\n| Metric | Value |\n|--------|-------|\n| Net PnL (7d, API) | <SOL> |\n| Fees earned | <SOL> |\n| Price/IL component | <SOL> |\n| Journal coverage | <matched>/<API pools closed in window> |\n| Unjournaled closes | <count> |\n| PnL divergences | <count> |\nThen list the 5 worst unjournaled closes (symbol, SOL, %) if any, and one sentence: is the journal drifting or healthy? If every close is journaled and no divergences, end with: Journal healthy ✅.",
+    "prompt": "You are a Solana Trading Specialist. Run the weekly DLMM journal reconciliation.\n\n**STEP 1: Run the reconciler**:\n```bash\npython3 __PROFILE__/skills/solana-dlmm/scripts/dlmm_reconcile.py --days 7\n```\n\n**STEP 2: Output a short card** (start your response directly with \"DLMM Journal Reconciliation — \"):\nDLMM Journal Reconciliation — <date + time>\n| Metric | Value |\n|--------|-------|\n| Net PnL (7d, API) | <SOL> |\n| Fees earned | <SOL> |\n| Price/IL component | <SOL> |\n| Journal coverage | <matched>/<API pools closed in window> |\n| Unjournaled closes | <count> |\n| PnL divergences | <count> |\nThen list the 5 worst unjournaled closes (symbol, SOL, %) if any, and one sentence: is the journal drifting or healthy? If every close is journaled and no divergences, end with: Journal healthy ✅.",
     "skills": [
       "solana-dlmm"
     ],
@@ -59,7 +59,7 @@
     "schedule": {
       "kind": "cron",
       "expr": "0 9 * * 1",
-      "display": "every Monday at 09:00 WIB"
+      "display": "every Monday at 09:00 (server time)"
     },
     "enabled": true,
     "model": "dev"

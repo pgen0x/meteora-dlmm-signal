@@ -8,6 +8,7 @@ import urllib.parse
 import os
 import re
 from local_indicators import check_local_indicators
+from tz_util import local_time_str
 
 # Configuration
 MIN_TVL_USD = 10000
@@ -1215,9 +1216,9 @@ def main():
         except (ValueError, TypeError):
             pass
 
-    wib_str = time.strftime("%H:%M WIB", time.gmtime(int(time.time()) + 7 * 3600))
+    ts_str = local_time_str()
     status_label = "🧪 DRY RUN DEPLOY" if is_dry_run else "🚀 DEPLOYED"
-    report = f"""{status_label} — {wib_str}
+    report = f"""{status_label} — {ts_str}
 {winner['name']} {position_address}
 Pool | {winner['pool']}
 Metric | Value
