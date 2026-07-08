@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.5.0...v1.6.0) (2026-07-08)
+
+
+### Features
+
+* **install:** ship the 20s monitor-loop systemd service ([06d7d94](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/06d7d941aabe7be0970c6c77c45da38b01db5fb8))
+* **skill:** turnover fast-cycle — 2m OOR fuse, PnL circuit breaker, fee compounding ([ba294c9](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/ba294c97477f00ea2dfc5b2813c0163eda9c5cc7))
+* **skill:** turnover fast-cycle — 2m OOR fuse, PnL circuit breaker, fee compounding ([330a854](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/330a8544aad5238dc9d84b0e5cfb8d2a4c2692a7))
+
 ## [1.5.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.4.0...v1.5.0) (2026-07-08)
 
 
