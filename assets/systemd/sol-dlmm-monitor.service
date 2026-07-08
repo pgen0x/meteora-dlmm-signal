@@ -1,0 +1,19 @@
+# User-level systemd unit for the 20s DLMM position monitor loop.
+# Installed by install.sh (rewrites __PROFILE__ to the target Hermes profile).
+# This loop is the actual trader-side safety net: auto-close, auto-swap-to-SOL,
+# OOR re-centering and cooldowns all fire from here — the Hermes cron is only
+# the reporting/judgment layer on top. Without this service, exit latency
+# degrades from seconds to the cron interval and the turnover fast-cycle
+# (2-minute OOR fuse) cannot react in time.
+[Unit]
+Description=DLMM Position Monitor Loop (auto-close + auto-swap to SOL)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash __PROFILE__/skills/solana-dlmm/scripts/dlmm_monitor_loop.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -120,6 +120,23 @@ echo "→ npm install (Meteora SDK) in repo"
 # next to the real file, in $REPO/assets/skill, not under the profile.
 ( cd "$REPO/assets/skill" && npm install --no-audit --no-fund >/dev/null 2>&1 ) && echo "   ok" || echo "   ⚠ npm install failed — run manually in $REPO/assets/skill"
 
+echo "→ Installing user systemd service (20s monitor loop)"
+# The loop service is the trader-side safety net — auto-close, auto-swap and OOR
+# re-centering fire from here every 20s; the Hermes cron is only the reporting
+# layer. Idempotent: re-running rewrites the unit and restarts the loop.
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  UNIT_DST="$HOME/.config/systemd/user/sol-dlmm-monitor.service"
+  mkdir -p "$(dirname "$UNIT_DST")"
+  sed "s#__PROFILE__#$PROFILE#g" "$REPO/assets/systemd/sol-dlmm-monitor.service" > "$UNIT_DST"
+  systemctl --user daemon-reload
+  systemctl --user enable --now sol-dlmm-monitor.service
+  echo "   installed + started sol-dlmm-monitor.service (user unit)"
+  echo "   ⚠ run 'loginctl enable-linger $USER' once so the loop survives logout"
+else
+  echo "   ⚠ no user systemd available — run the loop yourself:"
+  echo "     nohup bash $PROFILE/skills/solana-dlmm/scripts/dlmm_monitor_loop.sh &"
+fi
+
 echo "→ Building Go daemon"
 ( cd "$REPO" && go build -o mdtb . ) && echo "   built $REPO/mdtb"
 
