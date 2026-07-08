@@ -49,6 +49,8 @@ Pipeline supports three modes with **isolated position budgets** — each mode's
 *   Trailing TP Drop: 1.5% (floor below peak before the first ratchet tier; above +5% peak the monitor's profit ratchet takes over: peak ≥5% locks +2%, ≥10% locks +6%, ≥20% locks 70% of peak)
 *   Max Bins Pumped Above: 10 (exit if active bin exceeds upper bin by this count)
 *   Max Out of Range Minutes: 30 (exit if out of range for this long)
+*   Turnover Max OOR Minutes: 2 (turnover-mode fast fuse — an OOR turnover position is idle fee-capture capital, so it closes into a re-center after minutes instead of the long fuse above)
+*   Turnover CB Loss SOL: -0.05 (turnover rebalance circuit breaker — once a pool's cumulative realized PnL across rebalance closes in the last 24h drops below this many SOL, re-centering stops and normal exit + cooldown applies; count backstop 20/24h)
 *   Min Age for Yield Check: 60 minutes
 *   Min 24h Fee/TVL for Yield Check: 1.0% (exit if age exceeds minimum and fee/TVL drops below this)
 *   Min Exit Liquidity: $7,000 (exit if live pool liquidity drains below this after entry — can't exit cleanly; set below the $10k entry TVL gate so fresh positions never trip it)

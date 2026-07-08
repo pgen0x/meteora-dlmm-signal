@@ -60,6 +60,14 @@ def get_meteora_portfolio_positions(wallet_address):
 STOP_LOSS_PCT = -25.0
 TAKE_PROFIT_PCT = 50.0
 MAX_OOR_MINUTES = 30
+# Turnover fast-cycle (Meridian-style): an OOR turnover position is idle
+# fee-capture capital, so it re-centers after minutes — not the multi-hour
+# patience of the thesis modes. The 20s monitor loop makes this cadence real.
+TURNOVER_MAX_OOR_MINUTES = 2
+# Turnover rebalance circuit breaker: re-centers stop once the pool's cumulative
+# realized PnL across rebalance closes (24h window) drops below this many SOL.
+# Replaces a count cap as the primary guard — the count backstop stays at 20/24h.
+TURNOVER_CB_LOSS_SOL = -0.05
 SOL_MINT = "So11111111111111111111111111111111111111112"
 DEFAULT_DEPLOY_SOL = 0.5
 TRAILING_TRIGGER_PCT = 5.0
@@ -145,6 +153,8 @@ def load_soul_dlmm_params():
         "TRAILING_DROP_PCT": float(TRAILING_DROP_PCT),
         "MAX_BINS_PUMPED_ABOVE": 10,
         "MAX_OOR_MINUTES": int(MAX_OOR_MINUTES),
+        "TURNOVER_MAX_OOR_MINUTES": int(TURNOVER_MAX_OOR_MINUTES),
+        "TURNOVER_CB_LOSS_SOL": float(TURNOVER_CB_LOSS_SOL),
         "MIN_AGE_BEFORE_YIELD_CHECK": float(MIN_AGE_BEFORE_YIELD_CHECK),
         "MIN_FEE_TVL_24H_LIMIT": float(MIN_FEE_TVL_24H_LIMIT),
         "TIMEFRAME": "24h",
@@ -218,6 +228,10 @@ def load_soul_dlmm_params():
                 params["TRAILING_DROP_PCT"] = val
             elif "Max Bins Pumped Above" in name:
                 params["MAX_BINS_PUMPED_ABOVE"] = int(val)
+            elif "Turnover Max OOR Minutes" in name:
+                params["TURNOVER_MAX_OOR_MINUTES"] = int(val)
+            elif "Turnover CB Loss SOL" in name:
+                params["TURNOVER_CB_LOSS_SOL"] = val
             elif "Max Out of Range Minutes" in name:
                 params["MAX_OOR_MINUTES"] = int(val)
             elif "Min Age for Yield Check" in name:
@@ -445,11 +459,12 @@ def main():
     trailing_drop_pct = params["TRAILING_DROP_PCT"]
     max_bins_pumped_above = params["MAX_BINS_PUMPED_ABOVE"]
     max_oor_minutes = params["MAX_OOR_MINUTES"]
+    turnover_max_oor_minutes = params["TURNOVER_MAX_OOR_MINUTES"]
     min_age_before_yield_check = params["MIN_AGE_BEFORE_YIELD_CHECK"]
     min_fee_tvl_24h_limit = params["MIN_FEE_TVL_24H_LIMIT"]
     min_exit_liquidity_usd = params["MIN_EXIT_LIQUIDITY_USD"]
     
-    print(f"Loaded SOUL.md parameters -> SL: {stop_loss_pct:.1f}%, Trailing TP Trigger: {trailing_trigger_pct:.1f}%, Trailing TP Drop: {trailing_drop_pct:.1f}%, Max Bins Pumped Above: {max_bins_pumped_above}, Max OOR: {max_oor_minutes}m, Min Age for Yield Check: {min_age_before_yield_check:.1f}m, Min Fee/TVL: {min_fee_tvl_24h_limit:.2f}%")
+    print(f"Loaded SOUL.md parameters -> SL: {stop_loss_pct:.1f}%, Trailing TP Trigger: {trailing_trigger_pct:.1f}%, Trailing TP Drop: {trailing_drop_pct:.1f}%, Max Bins Pumped Above: {max_bins_pumped_above}, Max OOR: {max_oor_minutes}m (turnover {turnover_max_oor_minutes}m), Min Age for Yield Check: {min_age_before_yield_check:.1f}m, Min Fee/TVL: {min_fee_tvl_24h_limit:.2f}%")
     
     # --reset-trailing: reset peak_pnl + trailing_active after a standalone fee claim
     if cli.reset_trailing:
@@ -918,19 +933,23 @@ def main():
             if active_bin > upper_bin + max_bins_pumped_above:
                 close_reason = f"Pumped far above range (Active bin {active_bin} > Upper bin {upper_bin} + {max_bins_pumped_above})"
 
-        # 4. Out of Range (OOR) countdown check
+        # 4. Out of Range (OOR) countdown check. Turnover runs a much shorter
+        # fuse: its OOR close feeds the rebalance re-center, so every extra
+        # minute waiting is idle fee-capture capital (thesis modes keep the
+        # long fuse — their OOR close is a real exit decision).
+        oor_limit_minutes = turnover_max_oor_minutes if meta.get("mode") == "turnover" else max_oor_minutes
         oor_key = f"sol:dlmm:position:{pos_addr}:oor_since"
         if not in_range:
             oor_val, _, _ = run_command(f"redis-cli get {oor_key}")
             if not oor_val or oor_val == "(nil)":
                 run_command(f"redis-cli set {oor_key} {now}")
-                print(f"🔴 Position {pair} is Out of Range. Starting {max_oor_minutes}m countdown.")
+                print(f"🔴 Position {pair} is Out of Range. Starting {oor_limit_minutes}m countdown.")
             else:
                 oor_start = int(oor_val)
                 minutes_oor = (now - oor_start) / 60.0
                 print(f"🔴 Position {pair} has been Out of Range for {minutes_oor:.1f} minutes.")
-                if minutes_oor >= max_oor_minutes:
-                    close_reason = f"Out of Range for {minutes_oor:.1f}m (limit {max_oor_minutes}m)"
+                if minutes_oor >= oor_limit_minutes:
+                    close_reason = f"Out of Range for {minutes_oor:.1f}m (limit {oor_limit_minutes}m)"
         else:
             # Clear OOR timer
             run_command(f"redis-cli del {oor_key}")
@@ -961,16 +980,22 @@ def main():
         # 6. Advanced Strategies Hooks (Fee Compounding & Partial Harvesting)
         strategy = meta.get("strategy", "spot")
         
-        # Fee Compounding: claim fees and compound back if unclaimed fees >= 0.05 SOL and in range
+        # Fee Compounding: claim fees and compound back into the position when
+        # in range. Fires for the explicit fee_compounding strategy AND for any
+        # turnover-mode position (fee capture is the whole thesis there, so
+        # earned fees go straight back to work at a slightly higher bar to
+        # clear the extra close/deploy tx cost).
         # NOTE: --report-only must never mutate on-chain state — skip all execution in report mode.
-        if strategy == "fee_compounding" and in_range and not close_reason and not cli.report_only:
+        is_turnover_compound = (meta.get("mode") == "turnover" and strategy != "single_sided_reseed")
+        compound_min_sol = 0.02 if is_turnover_compound else 0.01
+        if (strategy == "fee_compounding" or is_turnover_compound) and in_range and not close_reason and not cli.report_only:
             unclaimed_fees_sol = 0.0
             if api_available and bp:
                 unclaimed_fees_sol = bp.get("unclaimed_fees_sol", 0.0)
             elif pnl_data:
                 unclaimed_fees_sol = float(pnl_data.get("unclaimed_fees_sol", 0.0) or 0.0)
-            if unclaimed_fees_sol >= 0.01:
-                print(f"💎 Strategy: fee_compounding. Compounding {unclaimed_fees_sol:.4f} SOL back into range...")
+            if unclaimed_fees_sol >= compound_min_sol:
+                print(f"💎 {'Turnover' if is_turnover_compound else 'Strategy: fee_compounding'} — compounding {unclaimed_fees_sol:.4f} SOL back into range...")
                 claim_cmd = f"{env_prefix}node {EXECUTOR_PATH} claim {pos_addr}"
                 claim_res, claim_err = run_command_json(claim_cmd)
                 if claim_res and claim_res.get("success"):
@@ -979,7 +1004,8 @@ def main():
                     close_res, close_err = run_command_json(close_cmd)
                     if close_res and close_res.get("success"):
                         new_deploy_sol = meta.get("size_sol", DEFAULT_DEPLOY_SOL) + unclaimed_fees_sol
-                        deploy_cmd = f"node {EXECUTOR_PATH} deploy {pool} 0 {new_deploy_sol} {bins_below} {meta.get('bins_above', 0)} spot {params.get('SLIPPAGE_BPS', 1000)}"
+                        compound_shape = "bid_ask" if is_turnover_compound else "spot"
+                        deploy_cmd = f"node {EXECUTOR_PATH} deploy {pool} 0 {new_deploy_sol} {bins_below} {meta.get('bins_above', 0)} {compound_shape} {params.get('SLIPPAGE_BPS', 1000)}"
                         print(f"Compounded redeploy: {deploy_cmd}")
                         dep_res, dep_err = run_command_json(deploy_cmd)
                         if dep_res and dep_res.get("success"):
@@ -1002,7 +1028,11 @@ def main():
                                 "size_sol": new_deploy_sol,
                                 "deployed_at": ts,
                                 "tx_hash": new_tx,
-                                "strategy": "fee_compounding",
+                                # Turnover keeps its own strategy label so rebalance
+                                # eligibility survives the compound; mode rides along
+                                # for the per-mode OOR fuse and rebalance rules.
+                                "strategy": strategy if is_turnover_compound else "fee_compounding",
+                                "mode": meta.get("mode") or "multiday",
                                 "amount_x": 0,
                                 "amount_y": new_deploy_sol
                              }
@@ -1176,6 +1206,24 @@ def main():
                     or (mode_cd == "multiday" and pnl_pct > 0)
                     or (mode_cd == "casual" and oor_above)
                 )
+                # Rebalance budget. Thesis modes keep the hard 3/24h count cap.
+                # Turnover churns by design (fast OOR fuse feeds re-centers), so
+                # its primary guard is a net-PnL circuit breaker: cumulative
+                # realized PnL across this pool's rebalance closes (24h window)
+                # must stay above the floor. The 20/24h count is only a backstop.
+                rebalance_pnl_key = f"sol:dlmm:rebalance_pnl:{pool}"
+                _rp_str, _, _ = run_command(f"redis-cli get \"{rebalance_pnl_key}\"")
+                try:
+                    rebalance_pnl_24h = float(_rp_str) if _rp_str and _rp_str.strip() and _rp_str.strip() != "(nil)" else 0.0
+                except ValueError:
+                    rebalance_pnl_24h = 0.0
+                cb_floor_sol = params.get("TURNOVER_CB_LOSS_SOL", TURNOVER_CB_LOSS_SOL)
+                if mode_cd == "turnover":
+                    rebalance_cap = 20
+                    rebalance_budget_ok = rebalances_24h < rebalance_cap and rebalance_pnl_24h > cb_floor_sol
+                else:
+                    rebalance_cap = 3
+                    rebalance_budget_ok = rebalances_24h < rebalance_cap
                 is_oor_rebalance = (
                     mode_allows_rebalance
                     and strategy != "single_sided_reseed"  # reseed path redeploys on its own — never both
@@ -1183,11 +1231,14 @@ def main():
                     and not emergency_close
                     and not is_dump_close
                     and pnl_pct > -8.0
-                    and rebalances_24h < 3
+                    and rebalance_budget_ok
                 )
 
                 if is_oor_rebalance:
-                    print(f"♻️ {mode_cd} rebalance eligible ({rebalances_24h}/3 in 24h) — skipping re-entry cooldown for {base_symbol_cd}")
+                    print(f"♻️ {mode_cd} rebalance eligible ({rebalances_24h}/{rebalance_cap} in 24h, pool rebalance PnL {rebalance_pnl_24h:+.4f} SOL) — skipping re-entry cooldown for {base_symbol_cd}")
+                elif (mode_cd == "turnover" and close_reason.startswith("Out of Range")
+                        and rebalance_pnl_24h <= cb_floor_sol):
+                    print(f"⛔ Turnover rebalance circuit breaker tripped: pool 24h rebalance PnL {rebalance_pnl_24h:+.4f} SOL <= {cb_floor_sol} SOL floor — normal exit + cooldown")
                 else:
                     cooldown_secs = 7200 if is_dump_close else 3600  # 2h dump, 1h other
                     # Clean profitable casual exit: the pool is often still hot after a
@@ -1303,6 +1354,12 @@ def main():
                     rebalance_bins = {"turnover": 20, "casual": 25, "multiday": 40}.get(mode_cd, 40)
                     run_command(f"redis-cli incr \"{rebalance_count_key}\"")
                     run_command(f"redis-cli expire \"{rebalance_count_key}\" 86400")
+                    # Feed the circuit breaker: this close's realized PnL joins the
+                    # pool's 24h rebalance tally. TTL refreshes on every write, so
+                    # the window is "24h since the last re-center" — sticky on
+                    # purpose: a pool that keeps churning keeps its loss history.
+                    run_command(f"redis-cli incrbyfloat \"{rebalance_pnl_key}\" {realized_sol:.6f}")
+                    run_command(f"redis-cli expire \"{rebalance_pnl_key}\" 86400")
                     rebalance_cmd = f"{env_prefix}node {EXECUTOR_PATH} deploy {pool} 0 {size_sol} {rebalance_bins} 0 bid_ask {params.get('SLIPPAGE_BPS', 1000)}"
                     print(f"♻️ {mode_cd} rebalance redeploy: {rebalance_cmd}")
                     dep_res, dep_err = run_command_json(rebalance_cmd)
@@ -1331,7 +1388,7 @@ def main():
                         if not is_dry_run_stored:
                             run_command(f"redis-cli set \"sol:dlmm:position:{new_pos}\" '{json.dumps(tracking_data)}'")
                             run_command(f"redis-cli sadd \"sol:dlmm:active_positions\" \"{new_pos}\"")
-                        swap_report += f"\n**Rebalanced**: re-centered {size_sol} SOL at the current price (re-center #{rebalances_24h + 1}/3 in 24h). New position: {new_pos}"
+                        swap_report += f"\n**Rebalanced**: re-centered {size_sol} SOL at the current price (re-center #{rebalances_24h + 1}/{rebalance_cap} in 24h). New position: {new_pos}"
                         print(f"♻️ {mode_cd} rebalance deployed: {new_pos}")
                     else:
                         print(f"❌ {mode_cd} rebalance deploy failed: {dep_err or (dep_res or {}).get('error')} — position stays closed, normal cooldown applies")

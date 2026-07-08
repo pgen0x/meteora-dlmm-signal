@@ -156,9 +156,24 @@ git clone https://github.com/pgen0x/meteora-dlmm-trading-bot.git
 cd meteora-dlmm-trading-bot
 
 # Installs the skill (symlinked, not copied — edits here go live instantly),
-# the webhook subscription, SOUL.md section + cron job templates, and builds mdtb.
+# the webhook subscription, SOUL.md section + cron job templates, the 20s
+# monitor-loop systemd service, and builds mdtb.
 ./install.sh ~/.hermes/profiles/<your-profile>
 ```
+
+The install enables `sol-dlmm-monitor.service` (user-level systemd), which runs
+`dlmm_monitor.py` every 20 seconds. **This loop is the trader-side safety net** —
+auto-close, auto-swap-to-SOL, out-of-range re-centering and cooldowns all fire
+from it; the Hermes cron job is only the reporting/judgment layer. Make it
+survive logout once per machine:
+
+```bash
+loginctl enable-linger $USER
+systemctl --user status sol-dlmm-monitor   # verify it's running
+```
+
+Without user systemd (e.g. macOS), run the loop some other persistent way:
+`nohup bash <profile>/skills/solana-dlmm/scripts/dlmm_monitor_loop.sh &`
 
 ### Configuration
 
