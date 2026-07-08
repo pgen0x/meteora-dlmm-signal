@@ -84,6 +84,34 @@ EMERGENCY_SL_BUFFER_PCT = 3.0
 # take-profit. Below it, a floor breach gets one-tick gap-through grace first.
 TRAILING_MIN_LOCK_PCT = 0.3
 
+def send_event_alert(text):
+    """Push an event alert straight to the operator via `hermes send` — script-side
+    platform delivery that reuses the gateway's credentials (no LLM, no agent loop),
+    so trade events land in seconds instead of waiting for the next cron report.
+    Target comes from DLMM_ALERT_TARGET in the profile .env ("telegram",
+    "telegram:<chat_id>", "discord:#ops", ...); set it empty to disable alerts.
+    Best-effort: a delivery failure must never break the monitor tick."""
+    target = os.environ.get("DLMM_ALERT_TARGET", "telegram")
+    if not target:
+        return
+    import tempfile
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+            tf.write(text)
+            path = tf.name
+        subprocess.run(["hermes", "send", "-t", target, "-f", path, "-q"],
+                       timeout=30, capture_output=True)
+    except Exception as e:
+        print(f"⚠️ Event alert delivery failed (non-fatal): {e}")
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def trailing_floor_pct(peak_pnl, trailing_drop_pct):
     """Profit-ratchet floor for the trailing exit. Tight near activation, locks
     progressively more profit as the peak grows, and gives big winners room to run
@@ -1040,6 +1068,11 @@ def main():
                                 run_command(f"redis-cli set \"sol:dlmm:position:{new_pos}\" '{json.dumps(tracking_data)}'")
                                 run_command(f"redis-cli sadd \"sol:dlmm:active_positions\" \"{new_pos}\"")
                                 print(f"Compounded position tracked successfully: {new_pos}")
+                            send_event_alert(
+                                f"💎 FEES COMPOUNDED — {pair}\n"
+                                f"Claimed {unclaimed_fees_sol:.4f} SOL in fees, redeployed {new_deploy_sol:.4f} SOL total.\n"
+                                f"New position: {new_pos}"
+                            )
                             continue
 
         # Partial Harvesting: secure 50% profits if PnL reaches +10%
@@ -1408,6 +1441,10 @@ Realized PnL | {pnl_pct:+.2f}% ({realized_sol:+.4f} SOL){swap_report}
 TX | https://solscan.io/tx/{txs[0]}
 """
                 print(report)
+                # Instant operator alert — the close (with any rebalance/compound
+                # detail in swap_report) is the event worth interrupting for; the
+                # cron report card only summarizes state between events.
+                send_event_alert(report)
             else:
                 print(f"❌ Failed to close position {pair}: {close_err or close_res.get('error')}")
 

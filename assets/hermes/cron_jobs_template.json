@@ -38,8 +38,8 @@
     ],
     "schedule": {
       "kind": "interval",
-      "minutes": 5,
-      "display": "every 5m"
+      "minutes": 30,
+      "display": "every 30m"
     },
     "enabled": true,
     "model": "dev",
