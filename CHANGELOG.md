@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.3.0...v1.4.0) (2026-07-08)
+
+
+### Features
+
+* **skill:** bid_ask bin shapes + Meridian-style turnover OOR rebalance ([6c2a2e3](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/6c2a2e35b65d8d2faabd88a63946401e6fb0ea9b))
+* **skill:** bid_ask bin shapes + turnover OOR rebalance ([7833c3d](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/7833c3d681a83c1727faa64d884f4d30d0a57a65))
+
 ## [1.3.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.2.0...v1.3.0) (2026-07-07)
 
 
