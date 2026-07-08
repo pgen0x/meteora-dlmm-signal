@@ -184,6 +184,9 @@ create `<profile>/.env`:
 SOLANA_PUBLIC_KEY=...
 SOLANA_PRIVATE_KEY=...            # base58, used by dlmm_executor.js
 SOLANA_RPC_URLS=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY,https://api.mainnet-beta.solana.com
+DLMM_ALERT_TARGET=telegram        # instant trade-event alerts (close/rebalance/compound)
+                                  # sent script-side via `hermes send` — no LLM tokens.
+                                  # "platform" or "platform:chat_id"; empty disables.
 ```
 
 And the daemon's own `.env` (this repo's root):

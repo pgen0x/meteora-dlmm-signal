@@ -150,6 +150,8 @@ Next steps:
        SOLANA_PRIVATE_KEY=...          # base58, used by dlmm_executor.js
        SOLANA_RPC_URLS=...             # comma-separated, tried in order with failover
                                         # (defaults to public mainnet-beta RPC if unset)
+       DLMM_ALERT_TARGET=telegram      # instant trade alerts via \`hermes send\`
+                                        # ("platform" or "platform:chat_id"; empty disables)
   2. Edit $SUB_DST:
        - set "secret" (match HERMES_WEBHOOK_SECRET below)
        - set deliver_extra.chat_id to your channel
