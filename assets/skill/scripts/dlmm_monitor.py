@@ -1153,18 +1153,31 @@ def main():
                 cooldown_key = f"sol:dlmm:cooldown:{base_symbol_cd}"
                 loss_streak_key = f"sol:dlmm:loss_streak:{base_symbol_cd}"
 
-                # Turnover OOR rebalance (Meridian-style re-center): a turnover
-                # position drifting out of range is a re-center opportunity, not
-                # an exit signal — the pool was picked for fee flow, and fee flow
-                # needs in-range liquidity. Guards: plain OOR closes only (never
-                # stop-loss / thin-liquidity / dump), shallow drawdown, and max 3
-                # re-centers per pool per 24h so a genuinely trending pool still
-                # exits instead of being chased forever.
+                # OOR rebalance (Meridian-style re-center): a position drifting
+                # out of range can be a re-center opportunity instead of an exit,
+                # but only when the drift doesn't contradict the mode's entry
+                # thesis. Turnover pools are picked for fee flow, so re-center in
+                # either direction; multiday re-centers only while profitable
+                # (drift, not dump); casual re-centers only on an UPWARD break —
+                # a downward OOR on a 30m-window pool is usually the dump, and
+                # re-centering there re-buys a falling token. Common guards:
+                # plain OOR closes only (never stop-loss / thin-liquidity /
+                # dump), shallow drawdown, and max 3 re-centers per pool per 24h
+                # so a genuinely trending pool still exits instead of being
+                # chased forever.
                 rebalance_count_key = f"sol:dlmm:rebalance_count:{pool}"
                 _rc_str, _, _ = run_command(f"redis-cli get \"{rebalance_count_key}\"")
                 rebalances_24h = int(_rc_str) if _rc_str and _rc_str.strip().isdigit() else 0
-                is_turnover_rebalance = (
-                    meta.get("mode") == "turnover"
+                mode_cd = meta.get("mode", "multiday")
+                # Direction needs live bin data; unknown bins fail closed (no rebalance).
+                oor_above = (active_bin is not None and upper_bin is not None and active_bin > upper_bin)
+                mode_allows_rebalance = (
+                    mode_cd == "turnover"
+                    or (mode_cd == "multiday" and pnl_pct > 0)
+                    or (mode_cd == "casual" and oor_above)
+                )
+                is_oor_rebalance = (
+                    mode_allows_rebalance
                     and strategy != "single_sided_reseed"  # reseed path redeploys on its own — never both
                     and close_reason.startswith("Out of Range")
                     and not emergency_close
@@ -1173,8 +1186,8 @@ def main():
                     and rebalances_24h < 3
                 )
 
-                if is_turnover_rebalance:
-                    print(f"♻️ Turnover rebalance eligible ({rebalances_24h}/3 in 24h) — skipping re-entry cooldown for {base_symbol_cd}")
+                if is_oor_rebalance:
+                    print(f"♻️ {mode_cd} rebalance eligible ({rebalances_24h}/3 in 24h) — skipping re-entry cooldown for {base_symbol_cd}")
                 else:
                     cooldown_secs = 7200 if is_dump_close else 3600  # 2h dump, 1h other
                     # Clean profitable casual exit: the pool is often still hot after a
@@ -1279,16 +1292,19 @@ def main():
                     else:
                         print("No base token balance available to re-seed.")
 
-                # Execute the turnover re-center: capital is back in SOL (the
-                # auto-swap above already liquidated the base side), so redeploy
-                # the same pool at the current active bin with the tight
-                # edge-weighted turnover shape. Deploy failure falls back to a
+                # Execute the re-center: capital is back in SOL (the auto-swap
+                # above already liquidated the base side), so redeploy the same
+                # pool single-sided below the current active bin, edge-weighted.
+                # Width follows the mode's holding intent: turnover stays tight
+                # for fee density, casual medium for the retrace window, multiday
+                # wide to survive days of drift. Deploy failure falls back to a
                 # normal 1h cooldown so the pool isn't silently forgotten.
-                if is_turnover_rebalance:
+                if is_oor_rebalance:
+                    rebalance_bins = {"turnover": 20, "casual": 25, "multiday": 40}.get(mode_cd, 40)
                     run_command(f"redis-cli incr \"{rebalance_count_key}\"")
                     run_command(f"redis-cli expire \"{rebalance_count_key}\" 86400")
-                    rebalance_cmd = f"{env_prefix}node {EXECUTOR_PATH} deploy {pool} 0 {size_sol} 20 0 bid_ask {params.get('SLIPPAGE_BPS', 1000)}"
-                    print(f"♻️ Turnover rebalance redeploy: {rebalance_cmd}")
+                    rebalance_cmd = f"{env_prefix}node {EXECUTOR_PATH} deploy {pool} 0 {size_sol} {rebalance_bins} 0 bid_ask {params.get('SLIPPAGE_BPS', 1000)}"
+                    print(f"♻️ {mode_cd} rebalance redeploy: {rebalance_cmd}")
                     dep_res, dep_err = run_command_json(rebalance_cmd)
                     if dep_res and dep_res.get("success"):
                         new_pos = dep_res.get("position")
@@ -1302,13 +1318,13 @@ def main():
                             "base_symbol": meta.get("base_symbol"),
                             "entry_price": rb_price,
                             "entry_bin": rb_bin,
-                            "bins_below": 20,
+                            "bins_below": rebalance_bins,
                             "bins_above": 0,
                             "size_sol": size_sol,
                             "deployed_at": now,
                             "tx_hash": dep_res.get("txHash"),
-                            "strategy": "turnover_rebalance",
-                            "mode": "turnover",
+                            "strategy": f"{mode_cd}_rebalance",
+                            "mode": mode_cd,
                             "amount_x": 0,
                             "amount_y": size_sol
                         }
@@ -1316,9 +1332,9 @@ def main():
                             run_command(f"redis-cli set \"sol:dlmm:position:{new_pos}\" '{json.dumps(tracking_data)}'")
                             run_command(f"redis-cli sadd \"sol:dlmm:active_positions\" \"{new_pos}\"")
                         swap_report += f"\n**Rebalanced**: re-centered {size_sol} SOL at the current price (re-center #{rebalances_24h + 1}/3 in 24h). New position: {new_pos}"
-                        print(f"♻️ Turnover rebalance deployed: {new_pos}")
+                        print(f"♻️ {mode_cd} rebalance deployed: {new_pos}")
                     else:
-                        print(f"❌ Turnover rebalance deploy failed: {dep_err or (dep_res or {}).get('error')} — position stays closed, normal cooldown applies")
+                        print(f"❌ {mode_cd} rebalance deploy failed: {dep_err or (dep_res or {}).get('error')} — position stays closed, normal cooldown applies")
                         run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex 3600")
 
                 # Telegram report formatting
