@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.6.0...v1.7.0) (2026-07-08)
+
+
+### Features
+
+* **skill:** instant script-side event alerts + 30m monitor cron ([4aa6315](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/4aa6315180c959f0509ec81b503c8017f7adcc6e))
+* **skill:** instant script-side event alerts, stretch monitor cron to 30m ([b708caf](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/b708caf56f934d88965ed857d9407feaf0466728))
+
 ## [1.6.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.5.0...v1.6.0) (2026-07-08)
 
 
