@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.7.0...v1.8.0) (2026-07-08)
+
+
+### Features
+
+* **skill:** dlmm_stats.py scoreboard + operator-configurable report timezone ([fe96923](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/fe96923b6c9bfdf4c656466a991747e71f4fbcd6))
+* **skill:** fast-cycle scoreboard + operator-configurable report timezone ([afd9da8](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/afd9da81c85e3ee68adecd183688dd0ff89b91f6))
+
 ## [1.7.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.6.0...v1.7.0) (2026-07-08)
 
 
