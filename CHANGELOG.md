@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.8.0...v1.9.0) (2026-07-09)
+
+
+### Features
+
+* **cron:** 1h-momentum override in position-monitor GUARD ([75d1008](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/75d1008e0d868ccd888c38885aedae8d18b6f537))
+* **monitor:** sustained-downtrend exit rule in the 20s loop ([6edce3a](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/6edce3ad0ea51f864a40dc6c0e7210a7486b9455))
+* **turnover:** fast-cycle — no trailing TP, 2h dedup window ([18d868d](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/18d868dcdd12d18d1a000c8b87eaa406b90e735c))
+
+
+### Bug Fixes
+
+* **cron:** forbid fee/TVL as HOLD justification for OOR positions ([784633d](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/784633d7c62324768afca6c68a0126a2257f373f))
+* exit discipline + turnover fast-cycle ([d685923](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/d68592333303ca83ada145669f3142d8ac01e22c))
+* remove hardcoded wallet address fallback from web3 scripts ([3148c70](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/3148c7046a7a9af268e8c58c87b4c50db8f1e715))
+
 ## [1.8.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.7.0...v1.8.0) (2026-07-08)
 
 
