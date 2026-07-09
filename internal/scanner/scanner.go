@@ -159,8 +159,13 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		// TTL silenced still-qualifying pools long after their cycle ended.
 		poolKey := mp.Mode + ":" + cand.Pool
 		seenTTL := s.cfg.SeenTTL
-		if mp.Mode == "turnover" {
+		switch mp.Mode {
+		case "turnover":
 			seenTTL = s.cfg.TurnoverSeenTTL
+		case "casual":
+			// Casual positions + their close cooldown resolve within hours;
+			// see CasualSeenTTL in config for why 24h over-silenced.
+			seenTTL = s.cfg.CasualSeenTTL
 		}
 		fresh, err := s.seen.MarkIfNewTTL(ctx, poolKey, seenTTL)
 		if err != nil {

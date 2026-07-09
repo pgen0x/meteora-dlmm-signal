@@ -24,6 +24,12 @@ type Config struct {
 	// hours, so a still-qualifying pool must be able to re-signal once the
 	// prior cycle ends (pool/symbol cooldowns still gate fee-dead re-entries).
 	TurnoverSeenTTL time.Duration
+	// Casual gets the same treatment at a gentler setting: positions live
+	// ~30m-2h and the monitor's close cooldown lapses in 1-2h, but the full
+	// SEEN_TTL silenced a proven pool for the rest of the day. 6h lets it
+	// re-compete after the cooldown clears without the re-signal spam a 1-2h
+	// window would cause (77% of screen passes are dedup re-qualifiers).
+	CasualSeenTTL time.Duration
 
 	// Screening thresholds per mode are defined in the meteora package;
 	// only the enable toggles live here.
@@ -115,6 +121,7 @@ func Load() Config {
 		RedisSeenKey:       getenv("REDIS_SEEN_KEY", "dlmm:signal:seen_pools"),
 		SeenTTL:            getdur("SEEN_TTL", 24*time.Hour),
 		TurnoverSeenTTL:    getdur("TURNOVER_SEEN_TTL", 2*time.Hour),
+		CasualSeenTTL:      getdur("CASUAL_SEEN_TTL", 6*time.Hour),
 		EnableCasual:       getbool("ENABLE_CASUAL", true),
 		EnableMultiday:     getbool("ENABLE_MULTIDAY", true),
 		EnableTurnover:     getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
