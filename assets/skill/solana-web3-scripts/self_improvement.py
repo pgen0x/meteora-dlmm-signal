@@ -98,7 +98,7 @@ def main():
     
     # 1. Gather Binance Web3 Wallet On-Chain Stats
     print("## 1. Binance Web3 Wallet On-Chain Stats (7D)")
-    wallet_address = os.environ.get("SOLANA_PUBLIC_KEY", "REPLACE_ME_PUBKEY")
+    wallet_address = os.environ["SOLANA_PUBLIC_KEY"]
     print(f"Wallet Address: `{wallet_address}`")
     stats = fetch_wallet_stats(wallet_address, "7D")
     

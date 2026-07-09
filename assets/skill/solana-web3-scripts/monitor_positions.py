@@ -69,7 +69,7 @@ _SOLANA_RPC_URLS = [
     "https://rpc.ankr.com/solana",
     "https://solana-mainnet.g.alchemy.com/v2/demo",
 ]
-_WALLET_PUBKEY = os.environ.get("SOLANA_PUBLIC_KEY", "REPLACE_ME_PUBKEY")
+_WALLET_PUBKEY = os.environ["SOLANA_PUBLIC_KEY"]
 
 
 def _poll_close_txid(mint, attempts=20, interval=1.5):
