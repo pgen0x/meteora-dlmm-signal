@@ -13,14 +13,21 @@ Usage:
   python3 dlmm_reconcile.py [--days 30] [--tolerance 2.0]
 """
 import argparse
+import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
 
 PORTFOLIO_API = "https://dlmm.datapi.meteora.ag/portfolio"
+# Daily-aggregate ground truth: pnl = withdrawn + fees - deposit, straight from
+# on-chain flows. The bot's own Redis book (sol:dlmm:pnl:daily:*) is written from
+# Portfolio-API snapshots at close time and can drift (see the -100% suspect-read
+# guard in dlmm_monitor.py); this endpoint is what actually happened.
+CALENDAR_API = "https://portfolio.datapi.meteora.ag/chart/calendar"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
@@ -48,6 +55,43 @@ def fetch_portfolio(wallet, days):
         if not data.get("hasNext"):
             return pools
         page += 1
+
+
+def fetch_calendar(wallet, days):
+    """Return [(utc_date, pnl_sol)] for the last `days` days from the calendar API."""
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    months = {today.strftime("%Y-%m"), (today - datetime.timedelta(days=days)).strftime("%Y-%m")}
+    points = []
+    for month in sorted(months):
+        url = f"{CALENDAR_API}/{wallet}?month={month}"
+        req = urllib.request.Request(url, headers={"User-Agent": "dlmm-lp/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+        points += data.get("data_points") or []
+    cutoff = today - datetime.timedelta(days=days)
+    out = []
+    for p in points:
+        d = datetime.date.fromisoformat(str(p.get("date_time", ""))[:10])
+        if cutoff <= d <= today:
+            out.append((d.isoformat(), float(p.get("pnl_sol") or 0)))
+    return sorted(out)
+
+
+def redis_daily_book(dates):
+    """Return {date: total_sol} from the bot's own Redis daily book. Dates the
+    monitor booked under a different local-timezone day still land in the window
+    sum, so compare sums, not individual days."""
+    book = {}
+    for d in dates:
+        try:
+            res = subprocess.run(["redis-cli", "hget", f"sol:dlmm:pnl:daily:{d}", "total_sol"],
+                                 capture_output=True, text=True, timeout=10)
+            val = res.stdout.strip()
+            if val and val != "(nil)":
+                book[d] = float(val)
+        except Exception:
+            pass
+    return book
 
 
 def load_journal():
@@ -154,6 +198,32 @@ def main():
                   f"(pool aggregates all positions — divergence may be multi-position)")
     else:
         print("No PnL divergences beyond tolerance.")
+
+    # Internal book vs on-chain truth. Redis days are keyed in server-local time,
+    # calendar days in UTC, so individual days can legitimately differ at the
+    # boundary — the window SUM is the signal.
+    print(f"\n=== Redis book vs calendar truth (last {cli.days}d) ===")
+    try:
+        calendar = fetch_calendar(wallet, cli.days)
+    except Exception as e:
+        print(f"calendar API unavailable ({e}) — skipping book check")
+        calendar = None
+    if calendar:
+        cal_dates = [d for d, _ in calendar]
+        book = redis_daily_book(cal_dates)
+        print(f"{'date (UTC)':<12} {'truth SOL':>10} {'book SOL':>10}")
+        for d, truth in calendar:
+            b = book.get(d)
+            print(f"{d:<12} {truth:>+10.4f} {(f'{b:+.4f}' if b is not None else '—'):>10}")
+        truth_sum = sum(v for _, v in calendar)
+        book_sum = sum(book.values())
+        delta = book_sum - truth_sum
+        print(f"{'SUM':<12} {truth_sum:>+10.4f} {book_sum:>+10.4f}")
+        if abs(delta) > 0.02:
+            print(f"⚠️ BOOK DRIFT: internal book differs from on-chain truth by {delta:+.4f} SOL "
+                  f"over {cli.days}d — phantom bookings or missed closes. Trust the truth column.")
+        else:
+            print("Book matches on-chain truth ✅")
 
 
 if __name__ == "__main__":

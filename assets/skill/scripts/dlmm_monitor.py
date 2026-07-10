@@ -81,6 +81,15 @@ MIN_EXIT_LIQUIDITY_USD = 7000.0
 # Emergency SL floor sits this far below the configured hard SL. Below the floor the
 # close bypasses the age grace, AI holds, indicator timing, and even --report-only.
 EMERGENCY_SL_BUFFER_PCT = 3.0
+# Any Portfolio-API PnL at or below this is a suspect read, not a market event: the
+# API returns pnlPctChange=-100 for positions it hasn't indexed yet (fresh deploy or
+# same-pool re-entry) — observed live as healthy positions force-closed and booked
+# as total losses while their on-chain close txs returned full funds. A suspect read
+# must be confirmed by the on-chain executor `pnl` before any close rule may act on
+# it; if the executor can't answer either, the position is skipped for one tick and
+# only a second consecutive suspect tick is allowed through.
+SUSPECT_PNL_PCT = -90.0
+SUSPECT_PNL_RETRY_TTL_SECS = 300
 # Trailing TP must lock at least this much (≈ round-trip swap cost) to count as a
 # take-profit. Below it, a floor breach gets one-tick gap-through grace first.
 TRAILING_MIN_LOCK_PCT = 0.3
@@ -904,6 +913,36 @@ def main():
                 upper_bin = meta.get("entry_bin", 0)
                 in_range = (active_bin >= lower_bin) and (active_bin <= upper_bin)
             print(f"Dry Run Price Proxy: {pnl_pct:+.2f}% PnL | Range: {'🟢 In' if in_range else '🔴 Out'}")
+
+        # SUSPECT-READ GUARD — a catastrophic Portfolio-API PnL must be confirmed
+        # on-chain before any close rule may act on it (see SUSPECT_PNL_PCT).
+        suspect_key = f"sol:dlmm:position:{pos_addr}:suspect_pnl_since"
+        if api_available and bp and pnl_pct <= SUSPECT_PNL_PCT:
+            verify_data, verify_err = run_command_json(f"node {EXECUTOR_PATH} pnl {pool} {pos_addr}")
+            if verify_data and verify_data.get("success") != False:
+                v_pct = float(verify_data.get("pnl_pct", pnl_pct))
+                if v_pct > SUSPECT_PNL_PCT:
+                    print(f"🛡️ SUSPECT PnL: Portfolio API says {pnl_pct:.2f}% but on-chain executor says {v_pct:+.2f}% — using on-chain read")
+                    pnl_pct = v_pct
+                    pnl_sol_actual = None  # API SOL figure is equally suspect
+                    in_range = verify_data.get("in_range", in_range)
+                    if float(verify_data.get("fee_per_tvl_24h", 0.0)) > 0:
+                        fee_per_tvl_24h = float(verify_data.get("fee_per_tvl_24h", 0.0))
+                    run_command(f"redis-cli del \"{suspect_key}\"")
+                else:
+                    print(f"⚠️ SUSPECT PnL CONFIRMED on-chain: executor also reads {v_pct:.2f}% — treating as real")
+                    run_command(f"redis-cli del \"{suspect_key}\"")
+            else:
+                prev_suspect, _, _ = run_command(f"redis-cli get \"{suspect_key}\"")
+                if prev_suspect and prev_suspect != "(nil)":
+                    print(f"⚠️ SUSPECT PnL {pnl_pct:.2f}% unverifiable (executor error: {verify_err}) for a 2nd consecutive tick — letting rules act on it")
+                    run_command(f"redis-cli del \"{suspect_key}\"")
+                else:
+                    print(f"🛡️ SUSPECT PnL: {pnl_pct:.2f}% from Portfolio API, on-chain verify unavailable ({verify_err}) — skipping {pair} this tick, will confirm next tick")
+                    run_command(f"redis-cli set \"{suspect_key}\" {int(now)} ex {SUSPECT_PNL_RETRY_TTL_SECS}")
+                    continue
+        elif api_available and bp:
+            run_command(f"redis-cli del \"{suspect_key}\"")
 
         # Update Trailing Take-Profit State in Redis
         peak_pnl = float(meta.get("peak_pnl", 0.0))
