@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.1](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.11.0...v1.11.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* guard against phantom -100% PnL reads from the Portfolio API ([d0a0132](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/d0a0132c1de8fa6be1380e36c514d7844c1d244e))
+* guard against phantom -100% PnL reads from the Portfolio API ([77c14d0](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/77c14d07e5510465886a05a46eff61b750765e89))
+
 ## [1.11.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.10.0...v1.11.0) (2026-07-10)
 
 
