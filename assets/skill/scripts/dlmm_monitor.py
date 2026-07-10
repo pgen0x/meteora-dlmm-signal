@@ -181,6 +181,18 @@ def log_close(pool, pair, meta, pos_addr, pnl_pct, realized_sol, fee_per_tvl_24h
         except Exception as e:
             print(f"⚠️ Failed to write pool memory: {e}")
 
+def clear_signal_seen(pool):
+    """Clear the mdtb signal daemon's dedup marker for this pool on close, so a
+    still-qualifying pool can re-signal on the next poll instead of staying
+    silenced for the rest of its SEEN_TTL window. The daemon's keys are
+    mode-scoped (<prefix>:<mode>:<pool>) and a position's stored mode tag may be
+    missing (legacy) or differ from the mode that would re-signal it, so clear
+    all modes. Re-entry safety is unaffected: the pipeline's already-held check
+    and the symbol/pool cooldowns set alongside this still gate any redeploy."""
+    prefix = os.environ.get("REDIS_SEEN_KEY", "dlmm:signal:seen_pools")
+    for mode in ("casual", "multiday", "turnover"):
+        run_command(f"redis-cli del \"{prefix}:{mode}:{pool}\"")
+
 def load_soul_dlmm_params():
     params = {
         "STOP_LOSS_PCT": float(STOP_LOSS_PCT),
@@ -639,6 +651,8 @@ def main():
             run_command(f"redis-cli del \"sol:dlmm:position:{cli.override_close}\"")
             run_command(f"redis-cli del \"sol:dlmm:position:{cli.override_close}:oor_since\"")
             run_command(f"redis-cli del \"sol:dlmm:position:{cli.override_close}:ai_hold_until\"")
+            if meta.get("pool"):
+                clear_signal_seen(meta["pool"])
             txs = close_res.get("txHashes", [close_res.get("txHash", "?")])
             print(f"✅ Force-closed. TX: {txs[0] if txs else '?'}")
             # Set re-entry cooldown (same as auto-close path)
@@ -1215,6 +1229,7 @@ def main():
                 run_command(f"redis-cli srem sol:dlmm:active_positions \"{pos_addr}\"")
                 run_command(f"redis-cli del \"sol:dlmm:position:{pos_addr}\"")
                 run_command(f"redis-cli del {oor_key}")
+                clear_signal_seen(pool)
                 
                 # Write Daily PnL statistics
                 today = time.strftime("%Y-%m-%d")

@@ -153,6 +153,26 @@ func FetchGmgn(apiKey, mint string, nowUnix int64) (*GmgnInfo, bool) {
 	return info, true
 }
 
+// GmgnReject returns a non-empty reason when the snapshot shows disqualifying
+// holder quality: insider ("rat trader") or bundler volume share above the
+// caps. These two are the strongest pre-rug signals GMGN exposes — all three
+// -100% closes in the journal were tokens whose volume was dominated by
+// insiders/bundlers that discovery-side gates couldn't see. Nil fields never
+// reject (fail-open, same contract as every other gate); a cap <= 0 disables
+// that check.
+func GmgnReject(g *GmgnInfo, maxRatPct, maxBundlerPct float64) string {
+	if g == nil {
+		return ""
+	}
+	if maxRatPct > 0 && g.RatVolumePct != nil && *g.RatVolumePct > maxRatPct {
+		return fmt.Sprintf("insider volume %.1f%% > %.1f%%", *g.RatVolumePct, maxRatPct)
+	}
+	if maxBundlerPct > 0 && g.BundlerVolumePct != nil && *g.BundlerVolumePct > maxBundlerPct {
+		return fmt.Sprintf("bundler volume %.1f%% > %.1f%%", *g.BundlerVolumePct, maxBundlerPct)
+	}
+	return ""
+}
+
 // ApplyGmgn attaches the GMGN snapshot to the outgoing candidate payload so
 // the agent judges holder quality on-screen instead of re-fetching it.
 func (c *Candidate) ApplyGmgn(g *GmgnInfo) {

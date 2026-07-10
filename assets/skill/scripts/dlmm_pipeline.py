@@ -610,7 +610,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--analyze-only", action="store_true", help="Screen pools, print all candidates JSON, exit without deploying")
-    parser.add_argument("--strategy", type=str, default=None, help="Override SOUL.md strategy (spot, custom_ratio_spot, single_sided_reseed, fee_compounding, partial_harvest)")
+    parser.add_argument("--strategy", type=str, default=None, help="Override SOUL.md strategy (spot, custom_ratio_spot, balanced_tight, single_sided_reseed, fee_compounding, partial_harvest)")
     parser.add_argument("--pool", type=str, default=None, help="Deploy a specific pool address instead of auto-selecting winner")
     parser.add_argument("--from-signal", dest="from_signal", type=str, default=None, help="JSON of a pre-screened candidate record from the mdtb signal daemon. Skips discovery+screen and deploys this exact pool; live gates (holding/cooldown/momentum/rent) still run.")
     parser.add_argument("--mode", type=str, default="multiday", choices=["casual", "multiday", "turnover"], help="Pipeline mode: casual (30m, 2-6h plays), multiday (24h, 24h+ holds) or turnover (30m, high-fee fee-capture plays)")
@@ -1070,9 +1070,29 @@ def main():
     elif strategy == "custom_ratio_spot":
         # Symmetric range: equal bins above and below for balanced in-range time
         # bins_below already set by volatility; bins_above mirrors it for symmetric coverage
+        # NOTE: SOL-only deposit means the SDK fills bins <= active only — the
+        # upper half of this range holds NO liquidity, so pumps earn no fees.
+        # balanced_tight is the two-sided fix; keep this for A/B comparison.
         bins_above = bins_below
         strategy_type = "spot"
         print(f"Strategy: custom_ratio_spot (symmetric Spot). bins_below: {bins_below}, bins_above: {bins_above}.")
+
+    elif strategy == "balanced_tight":
+        # Two-sided tight range. custom_ratio_spot deposits SOL only and the
+        # SDK cannot seed bins above the active price without base token, so
+        # its "symmetric" range is really a one-sided bid ladder: pumps earn
+        # nothing while dumps fill every SOL bin. Here half the deploy is
+        # pre-swapped to base token so BOTH sides hold liquidity — a rising
+        # price sells the token side bin-by-bin into SOL (realized profit on
+        # the way up) and both directions pay fees. Tight width because fee
+        # share scales inversely with bin count (40-bin spreads earned ~$2/bin);
+        # the monitor's OOR re-center handles range breaks better than
+        # wide-range insurance. The swap itself runs AFTER the pre-deploy
+        # gates below so an aborted deploy never strands a fresh token bag.
+        bins_below = max(10, min(15, int((vol * 1.2) / bin_step_pct) or 12))
+        bins_above = bins_below
+        strategy_type = "spot"
+        print(f"Strategy: balanced_tight (two-sided tight Spot). bins_below: {bins_below}, bins_above: {bins_above}.")
 
     elif strategy == "stage_aware":
         # Capital-stage selection: strategy + bin width scale with deploy size (SOL-only).
@@ -1125,6 +1145,28 @@ def main():
                 sys.exit(0)
         else:
             print("Pre-deploy depth check: Jupiter quote unavailable — proceeding without depth gate")
+
+    # balanced_tight acquires its token side only now — after every abort-able
+    # gate has passed — so a gate abort never leaves a swapped token stranded.
+    if strategy == "balanced_tight":
+        half_sol = deploy_sol / 2.0
+        print(f"balanced_tight: swapping {half_sol} SOL to {winner['base_symbol']} for the ask side...")
+        swap_res, swap_err = run_command_json(f"node {EXECUTOR_PATH} swap SOL {winner['base_mint']} {half_sol}")
+        if not swap_res or not swap_res.get("success"):
+            print(f"Pre-LP swap failed: {swap_err or (swap_res.get('error') if swap_res else 'No response')}. Aborting deploy.")
+            sys.exit(1)
+        time.sleep(5)
+        bal_data, bal_err = run_command_json(f"node {EXECUTOR_PATH} spl-balance {winner['base_mint']}")
+        base_bal = float(bal_data.get("balance", 0) or 0) if bal_data else 0.0
+        if base_bal <= 0:
+            print("balanced_tight: no base token balance after swap — aborting deploy (monitor token sweep reclaims any partial fill).")
+            sys.exit(1)
+        # Base token occupies the slot opposite SOL (executor: amountX -> tokenX).
+        if sol_is_x:
+            amount_x, amount_y = half_sol, base_bal
+        else:
+            amount_x, amount_y = base_bal, half_sol
+        print(f"balanced_tight: deploying {half_sol} SOL + {base_bal} {winner['base_symbol']} two-sided.")
 
     deploy_cmd = f"node {EXECUTOR_PATH} deploy {winner['pool']} {amount_x} {amount_y} {bins_below} {bins_above} {strategy_type} {slippage_bps}"
     print(f"Running deploy: {deploy_cmd}")

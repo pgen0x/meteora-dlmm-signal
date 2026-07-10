@@ -25,7 +25,7 @@ Pipeline supports three modes with **isolated position budgets** — each mode's
 *   Turnover Min Mcap: $1,000,000
 *   Turnover Min Holders: 500
 *   Turnover Max Positions: 2
-*   Prefer tight ranges around active bin (spot/custom_ratio_spot) — profit is fee_pct × turnover, so stay in range; exit on turnover decay, not price targets
+*   Prefer tight ranges around active bin (balanced_tight two-sided) — profit is fee_pct × turnover, so stay in range; exit on turnover decay, not price targets
 
 ### Shared Ingestion Gates
 *   Minimum Base Organic Score: 75
@@ -39,7 +39,7 @@ Pipeline supports three modes with **isolated position budgets** — each mode's
 *   Signal Weights: darwinian — entry signals of every close are correlated with realized PnL (60d window, recalc <= 1×/6h); the deploy pick prioritizes candidates strong on high-weight signals (`sol:dlmm:signal_weights`)
 
 ### Active Strategy Configuration
-*   Strategy: stage_aware (options: spot, custom_ratio_spot, single_sided_reseed, fee_compounding, partial_harvest, stage_aware)
+*   Strategy: stage_aware (options: spot, custom_ratio_spot, balanced_tight, single_sided_reseed, fee_compounding, partial_harvest, stage_aware)
 *   Indicators Enabled: true (enable indicator timing checks before entry/exit)
 *   Indicators Preset: supertrend_break (timing presets)
 
