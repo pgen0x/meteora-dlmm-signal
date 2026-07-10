@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.10.0...v1.11.0) (2026-07-10)
+
+
+### Features
+
+* balanced_tight two-sided strategy + GMGN insider/bundler hard gate ([a09d775](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/a09d775e2d5550919f8b333b7fe38fc5db11d8d7))
+* balanced_tight two-sided strategy, GMGN rug gate, unmark-on-close ([b1b99b3](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/b1b99b3f3521164b59a6f776dca7548853f2c073))
+* clear signal-seen marker on position close (unmark-on-close) ([5d81a33](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/5d81a3358947cd9101f3f4c01f03924fb1b1c616))
+
 ## [1.10.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.9.0...v1.10.0) (2026-07-09)
 
 
