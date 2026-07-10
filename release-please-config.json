@@ -11,6 +11,10 @@
         {
           "type": "generic",
           "path": "main.go"
+        },
+        {
+          "type": "generic",
+          "path": "README.md"
         }
       ]
     }
