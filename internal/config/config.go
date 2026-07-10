@@ -54,11 +54,16 @@ type Config struct {
 
 	// EnableGmgnGate fetches the GMGN token snapshot (smart-money holder
 	// count, insider/bundler volume share, dev track record) for every fresh
-	// candidate and attaches it to the payload. Advisory only — never
-	// rejects. Best-effort, fail-open; requires GmgnAPIKey (empty key
-	// disables the fetch regardless of the toggle).
-	EnableGmgnGate bool
-	GmgnAPIKey     string
+	// candidate and attaches it to the payload. Hard-rejects candidates whose
+	// insider ("rat") or bundler volume share exceeds the caps below — the
+	// strongest pre-rug signals available (three -100% rug closes drove the
+	// journal's entire net loss). Missing fields still pass (fail-open);
+	// requires GmgnAPIKey (empty key disables the fetch regardless of the
+	// toggle). A cap <= 0 disables that check (enrichment stays on).
+	EnableGmgnGate    bool
+	GmgnAPIKey        string
+	GmgnMaxRatPct     float64
+	GmgnMaxBundlerPct float64
 
 	// EnablePVPCheck searches for an established same-symbol rival token with
 	// its own live DLMM pool and flags contested candidates (is_pvp + rival
@@ -129,6 +134,8 @@ func Load() Config {
 		EnableAuditGate:    getbool("ENABLE_AUDIT_GATE", true),
 		EnableGmgnGate:     getbool("ENABLE_GMGN_GATE", true),
 		GmgnAPIKey:         getenv("GMGN_API_KEY", ""),
+		GmgnMaxRatPct:      getfloat("GMGN_MAX_RAT_PCT", 40),
+		GmgnMaxBundlerPct:  getfloat("GMGN_MAX_BUNDLER_PCT", 40),
 		LoneMinScore:       getfloat("LONE_MIN_SCORE", 50),
 		EnablePVPCheck:     getbool("ENABLE_PVP_CHECK", true),
 	}

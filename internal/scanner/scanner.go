@@ -123,7 +123,7 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 
 	// Per-poll tally so a quiet cycle logs "scanned N, 0 passed" instead of
 	// nothing — distinguishes "working, nothing qualified" from "API empty".
-	var screened, cooldownBlocked, deduped, momRejected, auditRejected, gmgnEnriched, loneHeld, pvpFlagged int
+	var screened, cooldownBlocked, deduped, momRejected, auditRejected, gmgnRejected, gmgnEnriched, loneHeld, pvpFlagged int
 	rejects := map[string]int{}
 
 	// Batch mode: collect every fresh, momentum-passing candidate this cycle and
@@ -205,13 +205,20 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 			}
 		}
 
-		// GMGN holder-quality enrichment (advisory, fail-open, same seen
-		// semantics as momentum/audit). Attaches smart-money/KOL holder
-		// counts, insider + bundler volume share and the dev's track record
-		// so the agent ranks smart-money-backed pools above bot-farmed ones.
-		// Never rejects — a failed fetch just ships the candidate bare.
+		// GMGN holder-quality gate (fail-open, same seen semantics as
+		// momentum/audit). Hard-rejects tokens whose insider ("rat") or
+		// bundler volume share exceeds the configured caps — the pre-rug
+		// signals none of the other gates can see. Otherwise attaches
+		// smart-money/KOL holder counts, insider + bundler volume share and
+		// the dev's track record so the agent ranks smart-money-backed pools
+		// above bot-farmed ones. A failed fetch just ships the candidate bare.
 		if s.cfg.EnableGmgnGate && s.cfg.GmgnAPIKey != "" {
 			if g, ok := meteora.FetchGmgn(s.cfg.GmgnAPIKey, cand.BaseMint, time.Now().Unix()); ok {
+				if r := meteora.GmgnReject(g, s.cfg.GmgnMaxRatPct, s.cfg.GmgnMaxBundlerPct); r != "" {
+					gmgnRejected++
+					log.Printf("scanner[%s]: %s (%s) rejected on gmgn: %s", mp.Mode, cand.BaseSymbol, cand.Pool[:8], r)
+					continue
+				}
 				cand.ApplyGmgn(g)
 				gmgnEnriched++
 			}
@@ -267,8 +274,8 @@ func (s *Scanner) pollMode(ctx context.Context, mp meteora.ModeParams) {
 		}
 	}
 
-	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d cooldown_blocked=%d deduped=%d mom_rejected=%d audit_rejected=%d gmgn_enriched=%d pvp_flagged=%d lone_held=%d sent=%d",
-		mp.Mode, len(pools), screened, cooldownBlocked, deduped, momRejected, auditRejected, gmgnEnriched, pvpFlagged, loneHeld, sent)
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d cooldown_blocked=%d deduped=%d mom_rejected=%d audit_rejected=%d gmgn_rejected=%d gmgn_enriched=%d pvp_flagged=%d lone_held=%d sent=%d",
+		mp.Mode, len(pools), screened, cooldownBlocked, deduped, momRejected, auditRejected, gmgnRejected, gmgnEnriched, pvpFlagged, loneHeld, sent)
 	if len(rejects) > 0 {
 		line += " rejects[" + rejectSummary(rejects) + "]"
 	}
