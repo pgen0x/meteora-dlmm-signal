@@ -144,6 +144,11 @@ func (s *Scanner) directDeploy(ctx context.Context, mode string, batch []*meteor
 	deployed := deploy.Deployed(out)
 	summary := deploy.Summarize(out, mode)
 	log.Printf("scanner[%s]: direct deploy done (deployed=%v) for %s\n%s", mode, deployed, batchSummary(batch), summary)
+	// Journal the per-candidate gate decisions — without these, a run of
+	// deterministic rejects is undiagnosable from the logs alone.
+	if narrative := deploy.GateNarrative(out); narrative != "" {
+		log.Printf("scanner[%s]: conviction narrative:\n%s", mode, narrative)
+	}
 	if deployed || s.cfg.ReportRejects {
 		if rerr := s.dep.Report(ctx, summary); rerr != nil {
 			log.Printf("scanner[%s]: report delivery failed: %v", mode, rerr)

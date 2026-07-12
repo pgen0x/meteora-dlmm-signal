@@ -48,6 +48,26 @@ func TestSummarizeReject(t *testing.T) {
 	}
 }
 
+func TestGateNarrative(t *testing.T) {
+	out := "🔍 Starting\nBatch mode: 2 signalled candidate(s)\n" +
+		"Batch reject FOO - global fees 3.2 SOL < 5 (bundled/scam pattern)\n" +
+		"Batch conviction BAR: -25.0 (dev_close-25) -> score 60.0\n" +
+		"No candidates survived batch conviction gates.\n"
+	got := GateNarrative(out)
+	if !strings.Contains(got, "Batch reject FOO - global fees 3.2 SOL < 5") {
+		t.Errorf("GateNarrative = %q, want reject line", got)
+	}
+	if !strings.Contains(got, "Batch conviction BAR: -25.0") {
+		t.Errorf("GateNarrative = %q, want conviction line", got)
+	}
+	if strings.Contains(got, "Batch mode:") || strings.Contains(got, "No candidates survived") {
+		t.Errorf("GateNarrative = %q, must contain only gate lines", got)
+	}
+	if GateNarrative("🚀 DEPLOYED — 12:00 WIB\n") != "" {
+		t.Error("GateNarrative without gate lines must be empty")
+	}
+}
+
 func TestRunnerDisabled(t *testing.T) {
 	r := New("", "", time.Second)
 	if r.Enabled() {

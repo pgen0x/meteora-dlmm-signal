@@ -653,28 +653,34 @@ WEIGHTED_SIGNALS_HIGHER_IS_BETTER = (
 )
 
 
-def apply_batch_conviction(candidates):
+# Post-adjustment conviction floor per mode. Multiday batch scores naturally
+# run in the 20s (24h-window ratios), casual/turnover in the 60-90s — a single
+# absolute floor would either strangle multiday or wave everything through.
+BATCH_CONVICTION_FLOOR = {"casual": 30.0, "multiday": 12.0, "turnover": 30.0}
+
+
+def apply_batch_conviction(candidates, mode="multiday"):
     """Deterministic port of the deploy agent's STEP 3 pick heuristics.
 
-    Hard-rejects candidates the agent always rejected (dev exited, near-zero
-    global fees, contested ticker without dominant conviction), then adjusts
-    each survivor's score with the same boosts/penalties the agent prompt
-    applied qualitatively, plus the darwinian signal weights when present.
-    Mutates candidate["score"] and returns the surviving list; every drop and
-    adjustment is printed so the pick narrative stays auditable.
+    Hard-rejects only the unambiguous scam tail (near-zero global fees,
+    contested ticker without dominant conviction). Softer risk signals the
+    agent used to weigh qualitatively — dev exited, low-but-nonzero global
+    fees — are score penalties, so a strong candidate can absorb one bad
+    signal instead of the whole batch dying (2026-07-12: 10/12 batches in a
+    row were zeroed by the old dev-exit/fees-30 hard gates while pump.fun dev
+    exits are near-universal on trending pools). A per-mode floor after all
+    adjustments keeps the weak ones out. Mutates candidate["score"] and
+    returns the surviving list; every drop and adjustment is printed so the
+    pick narrative stays auditable.
     """
     survivors = []
     for c in candidates:
-        # Dev wallet exited — the strongest single rug precursor we track.
-        dev_status = c.get("gmgn_dev_status")
-        if dev_status in ("creator_sell", "creator_close"):
-            print(f"Batch reject {c['name']} - dev exited (gmgn_dev_status: {dev_status})")
-            continue
         # Token has produced almost no swap fees globally = bundled/inorganic.
-        # Absent field = unknown (fail-open), never treated as zero.
+        # Only the truly-dead tail hard-rejects; the reference 30-SOL line is
+        # a penalty below. Absent field = unknown (fail-open), never zero.
         gf = c.get("global_fees_sol")
-        if gf is not None and float(gf) < 30:
-            print(f"Batch reject {c['name']} - global fees {float(gf):.1f} SOL < 30 (bundled/scam pattern)")
+        if gf is not None and float(gf) < 5:
+            print(f"Batch reject {c['name']} - global fees {float(gf):.1f} SOL < 5 (bundled/scam pattern)")
             continue
         # Ticker war: the copycat side usually loses. Only a high-conviction
         # candidate may fight an established rival for its symbol.
@@ -705,6 +711,21 @@ def apply_batch_conviction(candidates):
             adj -= 15; notes.append("bundler-15")
         if float(c.get("gmgn_dev_tokens_created") or 0) > 20:
             adj -= 10; notes.append("serial_dev-10")
+
+        # Dev wallet exited — strong rug precursor, but near-universal on
+        # pump.fun trending pools, so it discounts rather than disqualifies.
+        # creator_close (account closed, fully out) weighs more than a sell.
+        dev_status = c.get("gmgn_dev_status")
+        if dev_status == "creator_close":
+            adj -= 25; notes.append("dev_close-25")
+        elif dev_status == "creator_sell":
+            adj -= 15; notes.append("dev_sell-15")
+
+        # Low-but-nonzero global fees: reference bot's 30-SOL bundled/scam
+        # line, demoted from hard reject (Jupiter's figure runs off GMGN's).
+        gf = c.get("global_fees_sol")
+        if gf is not None and float(gf) < 30:
+            adj -= 15; notes.append("low_fees-15")
 
         # Quality penalties from the agent prompt.
         if float(c.get("mcap") or 0) > 5_000_000:
@@ -744,12 +765,18 @@ def apply_batch_conviction(candidates):
                 c["_conviction_adj"] += wa
                 c["_conviction_notes"].append(f"weights{wa:+.1f}")
 
+    floor = BATCH_CONVICTION_FLOOR.get(mode, 12.0)
+    kept = []
     for c in survivors:
         adj = c.get("_conviction_adj", 0.0)
         if adj:
             c["score"] = float(c.get("score", 0)) + adj
             print(f"Batch conviction {c['name']}: {adj:+.1f} ({', '.join(c.get('_conviction_notes', [])) or 'weights'}) -> score {c['score']:.1f}")
-    return survivors
+        if float(c.get("score", 0)) < floor:
+            print(f"Batch reject {c['name']} - conviction score {float(c.get('score', 0)):.1f} < {floor:.0f} {mode} floor")
+            continue
+        kept.append(c)
+    return kept
 
 
 def select_batch_strategy(c, mode):
@@ -860,7 +887,7 @@ def main():
             print("Aborting: no valid records in --from-batch payload (see docs/SIGNAL_SCHEMA.md)")
             sys.exit(1)
         print(f"Batch mode: {len(candidates)} signalled candidate(s) — discovery/screen skipped")
-        candidates = apply_batch_conviction(candidates)
+        candidates = apply_batch_conviction(candidates, mode)
         if not candidates:
             print("No candidates survived batch conviction gates.")
             sys.exit(0)
