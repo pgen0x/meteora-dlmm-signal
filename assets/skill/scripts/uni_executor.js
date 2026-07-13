@@ -46,6 +46,12 @@ const CHAIN_ID = 4663;
 const WETH = getAddress("0x0bd7d308f8e1639fab988df18a8011f41eacad73");
 const NPM = getAddress("0x73991a25c818bf1f1128deaab1492d45638de0d3");
 const ROUTER = getAddress("0xcaf681a66d020601342297493863e78c959e5cb2");
+const FACTORY = getAddress("0x1f7d7550b1b028f7571e69a784071f0205fd2efa");
+
+// Position entry journal: uni_monitor.py reads cost basis (WETH deployed) +
+// entry timestamp from here to compute PnL and age, the EVM analog of the
+// Meteora portfolio API the Solana monitor queries. One JSON line per mint.
+const POS_JOURNAL = path.join(PROFILE_DIR, "memories", "uni_positions.jsonl");
 
 const chain = {
   id: CHAIN_ID,
@@ -78,6 +84,51 @@ const routerAbi = parseAbi([
 ]);
 
 const wethAbi = parseAbi(["function deposit() payable"]);
+
+const factoryAbi = parseAbi([
+  "function getPool(address tokenA, address tokenB, uint24 fee) view returns (address pool)",
+]);
+
+// valueInWeth converts a position's raw (amount0, amount1) into WETH-raw wei
+// using the pool's sqrtPriceX96. Because sqrtPriceX96 is defined on RAW token
+// amounts (price = raw_token1 / raw_token0), token decimals cancel and no
+// per-token decimal lookup is needed. Returns a BigInt of WETH wei.
+function valueInWeth(amount0, amount1, sqrtPriceX96, wethIs0) {
+  const Q192 = 1n << 192n;
+  const p2 = sqrtPriceX96 * sqrtPriceX96; // price * 2^192
+  if (wethIs0) {
+    // token1 -> token0(WETH): amount1 * 2^192 / sqrtP^2
+    return amount0 + (amount1 * Q192) / p2;
+  }
+  // token0 -> token1(WETH): amount0 * sqrtP^2 / 2^192
+  return amount1 + (amount0 * p2) / Q192;
+}
+
+// journalEntry appends one position's cost basis so uni_monitor.py can price
+// PnL later. Best-effort: a journal write failure must never fail a mint.
+function journalEntry(rec) {
+  try {
+    fs.mkdirSync(path.dirname(POS_JOURNAL), { recursive: true });
+    fs.appendFileSync(POS_JOURNAL, JSON.stringify(rec) + "\n");
+  } catch (e) {
+    console.error(`warn: could not journal position entry: ${e.message}`);
+  }
+}
+
+// readEntry returns the newest journal record for a tokenId, or null. The
+// monitor passes cost basis on the CLI too (--entry-weth), so a missing
+// journal (e.g. hand-created position) is not fatal.
+function readEntry(tokenId) {
+  try {
+    const lines = fs.readFileSync(POS_JOURNAL, "utf8").trim().split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i]) continue;
+      const r = JSON.parse(lines[i]);
+      if (String(r.tokenId) === String(tokenId)) return r;
+    }
+  } catch { /* no journal yet */ }
+  return null;
+}
 
 function getAccount() {
   const raw = (process.env.EVM_PRIVATE_KEY || "").trim();
@@ -264,8 +315,66 @@ async function cmdDeploy(wallet, account) {
   // tokenId = ERC721 Transfer(0x0 -> us) log from the NPM contract.
   const xfer = rcpt.logs.find((l) => l.address.toLowerCase() === NPM.toLowerCase() && l.topics.length === 4);
   const tokenId = xfer ? BigInt(xfer.topics[3]).toString() : "unknown";
+  // Cost basis = the full WETH committed this deploy (balanced_tight swapped
+  // half into the token; both legs are still WETH-denominated capital).
+  journalEntry({
+    tokenId, pool, token0: st.token0, token1: st.token1, fee: Number(st.fee),
+    tickLower, tickUpper, wethIn: formatEther(amountWeth), strategy,
+    ts: Math.floor(Date.now() / 1000),
+  });
   console.log(`🚀 DEPLOYED pool=${pool} strategy=${strategy} position=${tokenId} tx=${hash}`);
   console.log(JSON.stringify({ success: true, pool, strategy, tokenId, tickLower, tickUpper, tx: hash }));
+}
+
+// cmdState prices one position for the monitor: current WETH value, PnL vs
+// entry cost basis, in-range flag, and age. Value = principal (from a
+// simulated full decreaseLiquidity, which reuses the pool contract's own tick
+// math) + already-tracked owed fees, both converted to WETH at spot. Live
+// fees accruing since the last pool interaction are NOT counted (they only
+// materialize on collect) — a small undercount that makes PnL conservative,
+// fine for SL/TP decisions where the price move dominates.
+async function cmdState(account) {
+  const id = BigInt(arg("id", "0"));
+  if (id <= 0n) throw new Error("--id required");
+  const p = await pub.readContract({ address: NPM, abi: npmAbi, functionName: "positions", args: [id] });
+  const token0 = getAddress(p[2]), token1 = getAddress(p[3]), fee = p[4];
+  const tickLower = Number(p[5]), tickUpper = Number(p[6]), liquidity = p[7];
+  let owed0 = p[10], owed1 = p[11];
+
+  const entry = readEntry(id);
+  let pool = entry?.pool;
+  if (!pool) {
+    pool = await pub.readContract({ address: FACTORY, abi: factoryAbi, functionName: "getPool", args: [token0, token1, fee] });
+  }
+  pool = getAddress(pool);
+  const st = await poolState(pool);
+  const wethIs0 = st.token0 === WETH;
+
+  let amount0 = owed0, amount1 = owed1;
+  if (liquidity > 0n) {
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 120);
+    const { result } = await pub.simulateContract({
+      address: NPM, abi: npmAbi, functionName: "decreaseLiquidity",
+      args: [{ tokenId: id, liquidity, amount0Min: 0n, amount1Min: 0n, deadline }],
+      account: account.address,
+    });
+    amount0 += result[0];
+    amount1 += result[1];
+  }
+
+  const valueRaw = valueInWeth(amount0, amount1, st.sqrtPriceX96, wethIs0);
+  const valueWeth = Number(formatEther(valueRaw));
+  const entryWeth = entry ? Number(entry.wethIn) : (arg("entry-weth", "") ? Number(arg("entry-weth")) : null);
+  const pnlPct = entryWeth ? ((valueWeth - entryWeth) / entryWeth) * 100 : null;
+  const tick = Number(st.tick);
+  const inRange = tick >= tickLower && tick < tickUpper;
+  const ageMin = entry ? (Math.floor(Date.now() / 1000) - entry.ts) / 60 : null;
+
+  console.log(JSON.stringify({
+    tokenId: id.toString(), pool,
+    tick, tickLower, tickUpper, inRange, liquidity: liquidity.toString(),
+    valueWeth, entryWeth, pnlPct, ageMin,
+  }));
 }
 
 async function cmdPositions(account) {
@@ -297,6 +406,14 @@ async function cmdCollect(wallet, account) {
 async function cmdClose(wallet, account) {
   const id = BigInt(arg("id", "0"));
   if (id <= 0n) throw new Error("--id required");
+  // Close authority guard, mirroring the Solana executor's DLMM_CLOSE_AUTH:
+  // uni_monitor.py is the only authorized closer (it owns the exit rulebook),
+  // so a bare `close` from anywhere else is rejected unless the operator
+  // passes --force for an explicit manual close. Prevents the deploy Runner or
+  // a stray script from unwinding a live position outside the exit rules.
+  if (!DRY_RUN && process.env.UNI_CLOSE_AUTH !== "1" && !hasFlag("force")) {
+    throw new Error("close requires UNI_CLOSE_AUTH=1 (monitor) or --force (manual)");
+  }
   const p = await pub.readContract({ address: NPM, abi: npmAbi, functionName: "positions", args: [id] });
   const [token0, token1, liquidity] = [getAddress(p[2]), getAddress(p[3]), p[7]];
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 120);
@@ -344,10 +461,11 @@ async function main() {
     case "quote": return cmdQuote();
     case "deploy": return cmdDeploy(wallet, account);
     case "positions": return cmdPositions(account);
+    case "state": return cmdState(account);
     case "collect": return cmdCollect(wallet, account);
     case "close": return cmdClose(wallet, account);
     default:
-      console.error("usage: uni_executor.js address|balance|wrap|quote|deploy|positions|collect|close [--flags]");
+      console.error("usage: uni_executor.js address|balance|wrap|quote|deploy|positions|state|collect|close [--flags]");
       process.exit(2);
   }
 }
