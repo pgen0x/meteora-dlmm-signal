@@ -12,6 +12,7 @@ import (
 	"github.com/meteora-dlmm-trading-bot/internal/config"
 	"github.com/meteora-dlmm-trading-bot/internal/deploy"
 	"github.com/meteora-dlmm-trading-bot/internal/meteora"
+	"github.com/meteora-dlmm-trading-bot/internal/robinhood"
 	"github.com/meteora-dlmm-trading-bot/internal/store"
 	"github.com/meteora-dlmm-trading-bot/internal/webhook"
 )
@@ -94,8 +95,8 @@ func (s *Scanner) modes() []meteora.ModeParams {
 
 // Run blocks, polling on PollInterval until ctx is cancelled.
 func (s *Scanner) Run(ctx context.Context) {
-	log.Printf("scanner: started (interval=%v, casual=%v, multiday=%v, turnover=%v, momentum=%v)",
-		s.cfg.PollInterval, s.cfg.EnableCasual, s.cfg.EnableMultiday, s.cfg.EnableTurnover, s.cfg.EnableMomentumGate)
+	log.Printf("scanner: started (interval=%v, casual=%v, multiday=%v, turnover=%v, momentum=%v, robinhood=%v)",
+		s.cfg.PollInterval, s.cfg.EnableCasual, s.cfg.EnableMultiday, s.cfg.EnableTurnover, s.cfg.EnableMomentumGate, s.cfg.EnableRobinhood)
 
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
@@ -116,6 +117,128 @@ func (s *Scanner) pollAll(ctx context.Context) {
 	for _, mp := range s.modes() {
 		s.pollMode(ctx, mp)
 	}
+	if s.cfg.EnableRobinhood {
+		s.pollRobinhood(ctx, robinhood.Fresh)
+	}
+}
+
+// rhBatchSummary renders a compact "SYM(score)" list for one log line.
+func rhBatchSummary(batch []*robinhood.Candidate) string {
+	parts := make([]string, 0, len(batch))
+	for _, c := range batch {
+		parts = append(parts, fmt.Sprintf("%s(%.0f)", c.BaseSymbol, c.Score))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// pollRobinhood runs one discovery cycle for the Robinhood Chain venue
+// (Phase 1, signal-only — see docs/ROBINHOOD_CHAIN_PLAN.md). Batches go to
+// the webhook sink ONLY: the direct-deploy pipeline speaks Solana and must
+// never receive an EVM candidate until the Phase 2 executor lands.
+func (s *Scanner) pollRobinhood(ctx context.Context, mp robinhood.ModeParams) {
+	pools, err := robinhood.FetchNewPools(s.cfg.RobinhoodDiscoverURL)
+	if err != nil {
+		log.Printf("scanner[%s]: fetch error: %v", mp.Mode, err)
+		return
+	}
+	now := time.Now()
+
+	var screened, deduped, holderRejected, secRejected, hqRejected, gmgnEnriched int
+	rejects := map[string]int{}
+
+	var batch []*robinhood.Candidate
+	var batchKeys []string
+	for _, p := range pools {
+		cand, reason := robinhood.Screen(p, mp, now)
+		if reason != "" {
+			rejects[reasonKey(reason)]++
+			continue
+		}
+		screened++
+
+		// Dedup BEFORE the safety fetches — same budget discipline as the
+		// Solana venue's momentum/audit ordering. The rh: prefix keeps venue
+		// keys disjoint from Solana pool keys in the shared store.
+		poolKey := "rh:" + mp.Mode + ":" + cand.Pool
+		fresh, err := s.seen.MarkIfNewTTL(ctx, poolKey, s.cfg.RobinhoodSeenTTL)
+		if err != nil {
+			log.Printf("scanner[%s]: seen store error: %v", mp.Mode, err)
+			continue
+		}
+		if !fresh {
+			deduped++
+			continue
+		}
+
+		// Blockscout holder floor (fail-open on fetch failure).
+		if n, ok := robinhood.FetchHolders(cand.BaseAddress); ok {
+			if s.cfg.RobinhoodMinHolders > 0 && n < s.cfg.RobinhoodMinHolders {
+				holderRejected++
+				log.Printf("scanner[%s]: %s (%s) rejected: holders %d < %d",
+					mp.Mode, cand.BaseSymbol, cand.Pool[:10], n, s.cfg.RobinhoodMinHolders)
+				continue
+			}
+			cand.Holders = &n
+		}
+
+		// GMGN contract-security gate. DIVERGENCE from the fail-open rule,
+		// on purpose: a POSITIVE honeypot/blacklist/sell-tax detection hard
+		// rejects (EVM's #1 rug vector); unknown (-1/null) still passes.
+		if s.cfg.GmgnAPIKey != "" {
+			if sec, ok := robinhood.FetchSecurity(s.cfg.GmgnAPIKey, cand.BaseAddress, now.Unix()); ok {
+				if r := robinhood.SecurityReject(sec); r != "" {
+					secRejected++
+					log.Printf("scanner[%s]: %s (%s) rejected on security: %s",
+						mp.Mode, cand.BaseSymbol, cand.Pool[:10], r)
+					continue
+				}
+				cand.ApplySecurity(sec)
+			}
+
+			// GMGN holder-quality gate — same rat/bundler caps as Solana.
+			if ti, ok := robinhood.FetchTokenInfo(s.cfg.GmgnAPIKey, cand.BaseAddress, now.Unix()); ok {
+				if r := robinhood.HolderQualityReject(ti, s.cfg.GmgnMaxRatPct, s.cfg.GmgnMaxBundlerPct); r != "" {
+					hqRejected++
+					log.Printf("scanner[%s]: %s (%s) rejected on gmgn: %s",
+						mp.Mode, cand.BaseSymbol, cand.Pool[:10], r)
+					continue
+				}
+				cand.ApplyTokenInfo(ti)
+				gmgnEnriched++
+			}
+		}
+
+		batch = append(batch, cand)
+		batchKeys = append(batchKeys, poolKey)
+	}
+
+	sent := 0
+	if len(batch) > 0 {
+		if !s.cfg.RobinhoodWebhook {
+			// Observe-only (Phase 1 default): journal the full payload so the
+			// gate thresholds can be calibrated from logs, without exposing the
+			// Solana-only Hermes subscription / deploy pipeline to EVM batches.
+			sent = len(batch)
+			if body, err := json.Marshal(batch); err == nil {
+				log.Printf("scanner[%s]: OBSERVE batch of %d pools: %s\n%s", mp.Mode, sent, rhBatchSummary(batch), body)
+			}
+		} else if err := s.fwd.Send("robinhood_pool_discovery", batch, now.Unix()); err != nil {
+			for _, k := range batchKeys {
+				s.seen.Unmark(ctx, k)
+			}
+			log.Printf("scanner[%s]: webhook error for batch of %d (will retry): %v", mp.Mode, len(batch), err)
+		} else {
+			sent = len(batch)
+			log.Printf("scanner[%s]: SIGNAL batch sent %d pools: %s", mp.Mode, sent, rhBatchSummary(batch))
+		}
+	}
+
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d holder_rejected=%d sec_rejected=%d gmgn_rejected=%d gmgn_enriched=%d sent=%d",
+		mp.Mode, len(pools), screened, deduped, holderRejected, secRejected, hqRejected, gmgnEnriched, sent)
+	if len(rejects) > 0 {
+		line += " rejects[" + rejectSummary(rejects) + "]"
+	}
+	log.Print(line)
 }
 
 // directDeploy hands the batch straight to the deterministic picker pipeline

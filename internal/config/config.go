@@ -71,6 +71,30 @@ type Config struct {
 	// fail-open like the momentum/audit gates.
 	EnablePVPCheck bool
 
+	// EnableRobinhood turns on the Robinhood Chain venue: GeckoTerminal
+	// new-pool discovery + screening (internal/robinhood). Phase 1 is
+	// signal-only — robinhood batches ALWAYS go to the webhook sink, never to
+	// DeployCmd, because the deploy pipeline only speaks Solana (see
+	// docs/ROBINHOOD_CHAIN_PLAN.md). Off by default.
+	EnableRobinhood bool
+	// RobinhoodDiscoverURL overrides the GeckoTerminal new_pools endpoint
+	// (empty = the package default). The public tier allows 30 req/min.
+	RobinhoodDiscoverURL string
+	// RobinhoodSeenTTL is the venue's dedup window. Fresh-pool signals age out
+	// of the thesis within a day; 6h lets a still-qualifying pool re-signal.
+	RobinhoodSeenTTL time.Duration
+	// RobinhoodMinHolders is the Blockscout holder-count floor per candidate
+	// (fail-open when the fetch fails; 0 disables). New-chain tokens
+	// accumulate holders fast — 50 filters single-wallet theater without
+	// demanding Solana-scale (500+) adoption.
+	RobinhoodMinHolders int
+	// RobinhoodWebhook forwards robinhood batches to the webhook sink. Off by
+	// default (observe-only: batches are journaled to the log): the live
+	// Hermes subscription prompt only understands Solana DLMM payloads, and
+	// an EVM candidate reaching it could trigger a nonsense deploy attempt.
+	// Enable once the subscription prompt handles the robinhood schema.
+	RobinhoodWebhook bool
+
 	// DeployCmd switches the daemon to direct-deploy mode: instead of
 	// forwarding each batch to the Hermes agent webhook (LLM pick, observed at
 	// 19-54 min/decision), the daemon runs this command with
@@ -111,6 +135,18 @@ func getbool(key string, def bool) bool {
 	return b
 }
 
+func getint(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 func getfloat(key string, def float64) float64 {
 	v := os.Getenv(key)
 	if v == "" {
@@ -138,29 +174,34 @@ func getdur(key string, def time.Duration) time.Duration {
 // Load builds a Config from the environment with sane public defaults.
 func Load() Config {
 	return Config{
-		DiscoverURL:        getenv("METEORA_DISCOVER_URL", "https://pool-discovery-api.datapi.meteora.ag/pools"),
-		PollInterval:       getdur("POLL_INTERVAL", 60*time.Second),
-		WebhookURL:         getenv("HERMES_WEBHOOK_URL", "http://127.0.0.1:8646/webhooks/dlmm-signal"),
-		WebhookSecret:      getenv("HERMES_WEBHOOK_SECRET", "dlmm-signal-secret-change-me"),
-		RedisAddr:          getenv("REDIS_ADDR", ""),
-		RedisSeenKey:       getenv("REDIS_SEEN_KEY", "dlmm:signal:seen_pools"),
-		SeenTTL:            getdur("SEEN_TTL", 24*time.Hour),
-		TurnoverSeenTTL:    getdur("TURNOVER_SEEN_TTL", 2*time.Hour),
-		CasualSeenTTL:      getdur("CASUAL_SEEN_TTL", 6*time.Hour),
-		EnableCasual:       getbool("ENABLE_CASUAL", true),
-		EnableMultiday:     getbool("ENABLE_MULTIDAY", true),
-		EnableTurnover:     getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
-		EnableMomentumGate: getbool("ENABLE_MOMENTUM_GATE", true),
-		EnableAuditGate:    getbool("ENABLE_AUDIT_GATE", true),
-		EnableGmgnGate:     getbool("ENABLE_GMGN_GATE", true),
-		GmgnAPIKey:         getenv("GMGN_API_KEY", ""),
-		GmgnMaxRatPct:      getfloat("GMGN_MAX_RAT_PCT", 40),
-		GmgnMaxBundlerPct:  getfloat("GMGN_MAX_BUNDLER_PCT", 40),
-		LoneMinScore:       getfloat("LONE_MIN_SCORE", 50),
-		EnablePVPCheck:     getbool("ENABLE_PVP_CHECK", true),
-		DeployCmd:          getenv("DEPLOY_CMD", ""),
-		DeployTimeout:      getdur("DEPLOY_TIMEOUT", 5*time.Minute),
-		ReportCmd:          getenv("REPORT_CMD", ""),
-		ReportRejects:      getbool("REPORT_REJECTS", false),
+		DiscoverURL:          getenv("METEORA_DISCOVER_URL", "https://pool-discovery-api.datapi.meteora.ag/pools"),
+		PollInterval:         getdur("POLL_INTERVAL", 60*time.Second),
+		WebhookURL:           getenv("HERMES_WEBHOOK_URL", "http://127.0.0.1:8646/webhooks/dlmm-signal"),
+		WebhookSecret:        getenv("HERMES_WEBHOOK_SECRET", "dlmm-signal-secret-change-me"),
+		RedisAddr:            getenv("REDIS_ADDR", ""),
+		RedisSeenKey:         getenv("REDIS_SEEN_KEY", "dlmm:signal:seen_pools"),
+		SeenTTL:              getdur("SEEN_TTL", 24*time.Hour),
+		TurnoverSeenTTL:      getdur("TURNOVER_SEEN_TTL", 2*time.Hour),
+		CasualSeenTTL:        getdur("CASUAL_SEEN_TTL", 6*time.Hour),
+		EnableCasual:         getbool("ENABLE_CASUAL", true),
+		EnableMultiday:       getbool("ENABLE_MULTIDAY", true),
+		EnableTurnover:       getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
+		EnableMomentumGate:   getbool("ENABLE_MOMENTUM_GATE", true),
+		EnableAuditGate:      getbool("ENABLE_AUDIT_GATE", true),
+		EnableGmgnGate:       getbool("ENABLE_GMGN_GATE", true),
+		GmgnAPIKey:           getenv("GMGN_API_KEY", ""),
+		GmgnMaxRatPct:        getfloat("GMGN_MAX_RAT_PCT", 40),
+		GmgnMaxBundlerPct:    getfloat("GMGN_MAX_BUNDLER_PCT", 40),
+		LoneMinScore:         getfloat("LONE_MIN_SCORE", 50),
+		EnablePVPCheck:       getbool("ENABLE_PVP_CHECK", true),
+		EnableRobinhood:      getbool("ROBINHOOD_ENABLED", false),
+		RobinhoodDiscoverURL: getenv("ROBINHOOD_DISCOVER_URL", ""),
+		RobinhoodWebhook:     getbool("ROBINHOOD_WEBHOOK", false),
+		RobinhoodSeenTTL:     getdur("ROBINHOOD_SEEN_TTL", 6*time.Hour),
+		RobinhoodMinHolders:  getint("ROBINHOOD_MIN_HOLDERS", 50),
+		DeployCmd:            getenv("DEPLOY_CMD", ""),
+		DeployTimeout:        getdur("DEPLOY_TIMEOUT", 5*time.Minute),
+		ReportCmd:            getenv("REPORT_CMD", ""),
+		ReportRejects:        getbool("REPORT_REJECTS", false),
 	}
 }

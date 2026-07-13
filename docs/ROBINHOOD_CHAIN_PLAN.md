@@ -65,33 +65,67 @@ Principle: **new venue package beside `internal/meteora`, not a rewrite.**
 Scanner loop, dedup store, deploy runner, webhook forwarder are already
 venue-agnostic in shape; screening/discovery/executor are venue-specific.
 
-### Phase 0 — spike (no code merged)
-- Verify with curl: GeckoTerminal `new_pools` fields for `robinhood`,
-  DexScreener `robinhood` pair schema, GoPlus support for chain 4663
-  (fallback: honeypot.is or Blockscout-based heuristics).
-- Testnet/small-mainnet manual tx: mint + collect + burn a v3 position via
-  script to validate the executor path end-to-end.
+### Phase 0 — spike ✅ (ran 2026-07-13, results below)
+- **GeckoTerminal** `/networks/robinhood/new_pools`: 200 OK, 20 pools/page.
+  Dex split on sample page: 14 uniswap-v3 / 4 uniswap-v4 / 1 v2 / 1 virtuals —
+  v3-first confirmed. Fields: `reserve_in_usd`, `volume_usd` +
+  `transactions` + `price_change_percentage` per window (m5→h24),
+  `pool_created_at`, `fdv_usd`, `market_cap_usd`. `include=base_token,...`
+  adds name/symbol/decimals. **Caveats**: no fee-tier field (parse from pool
+  `name`, e.g. "CALLIE / WETH 0.3%", or `fee()` via RPC); v4 pool `address`
+  is a bytes32 pool ID, not a contract address.
+- **DexScreener**: `latest/dex/pairs/robinhood/{pool}` works, standard
+  schema → `momentum.go` reusable with chainId swap.
+- **GoPlus**: chain 4663 **NOT supported** (code 2022). **honeypot.is**:
+  not supported ("Invalid chain"). Both dead ends.
+- **GMGN OpenAPI**: `chain=robinhood` fully supported with existing
+  exist-auth. `/v1/token/info` returns complete `wallet_tags_stat` /
+  `stat` (rat %, bundler %, top-10) / `dev`, plus new useful fields:
+  `launchpad`, `launchpad_status`, `trade_fee`, `standard`.
+  **`/v1/token/security`** also live: `is_honeypot`, `is_blacklist`,
+  `is_open_source`, `buy_tax`/`sell_tax`, `is_renounced`, lock info —
+  fills the GoPlus hole. Fields are often `null`/`-1` (unknown) on fresh
+  tokens → gate = fail-closed ONLY on positive detection
+  (`honeypot=1`, sell_tax over cap), fail-open on null/unknown.
+- **Blockscout API v2**: `/api/v2/tokens/{addr}` gives `holders_count`;
+  `/holders` gives top-holder distribution. No key needed.
+- **RPC** `rpc.mainnet.chain.robinhood.com`: live, `eth_chainId` = 0x1237
+  (4663), batch JSON-RPC works.
+- Still open: manual v3 mint + collect + burn (needs funded EVM wallet —
+  do before Phase 2 goes live).
 
-### Phase 1 — daemon: discover + screen + signal (dry-run)
-- `internal/venue` — small interface: `Discover(ctx, mode) ([]Signal, error)`
-  extracted over current meteora flow (thin refactor; meteora keeps its
-  behavior verbatim).
-- `internal/robinhood/` new package:
-  - `discover.go` — GeckoTerminal new_pools poll (respect 30/min budget
-    shared across modes).
-  - `screen.go` — port `ModeParams` gates: age window, fee/TVL (computed),
-    volume, liquidity floor, txn counts, holder count via Blockscout.
-  - `safety.go` — GoPlus/honeypot gate (fail-closed on positive detection,
-    fail-open on API absence), verified-contract check via Blockscout.
-  - `momentum.go` — reuse DexScreener logic with `robinhood` chainId
-    (parameterize existing `internal/meteora/momentum.go` instead of copying).
-- `internal/config` — `ROBINHOOD_ENABLED`, `ROBINHOOD_RPC_URL`,
-  `GECKOTERMINAL_*`, `GOPLUS_*`; per-venue mode toggles.
-- Store: dedup key prefixed `rh:` (same Redis, independent TTLs).
-- Signal schema: add `"chain": "robinhood"` field + EVM-specific fields
-  (pool address, fee tier, token0/1). Update `docs/SIGNAL_SCHEMA.md`.
-- Run **signal-only** (webhook/report, no deploy) ≥3 days; journal what the
-  gates would pick (reuse GateNarrative pattern).
+### Phase 1 — daemon: discover + screen + signal ✅ (landed 2026-07-13)
+Implemented as a sibling package, not an interface extraction — the two
+venues share the scanner loop, store and forwarder but their pool shapes
+diverge too much for a common `Discover()` signature to earn its keep.
+- `internal/robinhood/`:
+  - `discover.go` — GeckoTerminal new_pools ×5 pages + trending_pools ×1,
+    merged/deduped, Uniswap-v3-only. Pagination is load-bearing: launch
+    velocity is ~7 pools/min, so ONE page spans ~2-3 minutes and anything
+    old enough to pass MinAge has already scrolled off (first two smoke
+    runs rejected 57/57 on age). 6 req/cycle « 30/min public budget.
+  - `screen.go` — `Fresh` mode: WETH quote, age 3m–24h, reserve $8k–$500k,
+    fee tier ≥0.25%, projected fee/TVL ≥5%/day (volume×tier — GT has no fee
+    field), ≥30 txns + ≥12 buyers h1, buys-without-sells honeypot shape
+    reject, FDV $20k–$50M, momentum gates on GT's own windows (no
+    DexScreener call needed). Geometric-mean score like the degen score.
+  - `safety.go` — GMGN OpenAPI `chain=robinhood` `/token/security` (honeypot/
+    blacklist/sell-tax, **fail-closed on positive detection only**) +
+    `/token/info` (rat/bundler caps reuse `GMGN_MAX_*`), Blockscout holder
+    floor. GoPlus/honeypot.is dead ends per Phase 0.
+- Config: `ROBINHOOD_ENABLED` (default false), `ROBINHOOD_DISCOVER_URL`,
+  `ROBINHOOD_SEEN_TTL` (6h), `ROBINHOOD_MIN_HOLDERS` (50),
+  `ROBINHOOD_WEBHOOK` (default false = **observe-only**: batches journal to
+  the daemon log; the live Hermes prompt + deploy pipeline are Solana-only,
+  so EVM payloads stay out of both until Phase 2).
+- Store: dedup keys `rh:<mode>:<pool>`; schema documented in
+  `docs/SIGNAL_SCHEMA.md` ("robinhood_pool_discovery").
+- Unit tests: `internal/robinhood/screen_test.go` (gate matrix + security
+  tri-state). Live smoke 2026-07-13: 61 fetched → 3 passed, fully enriched
+  (holders, taxes, bundler %); rejects `reserve=50 fee_tier=5 too-young=3`.
+- **Next**: run observe-only ≥3 days, calibrate `Fresh` thresholds from the
+  journaled batches. Observed quirk to watch: copycat same-symbol launches
+  (two CALLIE pools in one cycle) — the venue may need a PVP-style flag.
 
 ### Phase 2 — executor: deploy path
 - `assets/skill/scripts/uni_executor.js` (or `.ts`) — viem +

@@ -139,3 +139,68 @@ Only pools passing **all** of these are emitted:
 The agent still does final live checks (audit, portfolio slots, balance,
 cooldowns — including the pool-level repeat-deploy cooldown — and learned
 signal weights) before deploying.
+
+## Robinhood Chain venue (`robinhood_pool_discovery`)
+
+Enabled by `ROBINHOOD_ENABLED` (Phase 1: observe-only — batches journal to the
+daemon log; `ROBINHOOD_WEBHOOK=true` forwards them with `source:
+"robinhood_pool_discovery"` and the same envelope/HMAC transport). Payload is
+an array of screened Uniswap v3 pools on Robinhood Chain (chain ID 4663).
+Never routed to `DEPLOY_CMD` — the deploy pipeline is Solana-only until the
+EVM executor lands (docs/ROBINHOOD_CHAIN_PLAN.md Phase 2).
+
+```json
+{
+  "chain": "robinhood",
+  "mode": "rh-fresh",
+  "pool": "0xc187feb911997c06bc94903def113b677e6577c9",
+  "dex": "uniswap-v3",
+  "name": "CALLIE / WETH 1%",
+  "created_at": "2026-07-13T02:08:17Z",
+  "age_minutes": 124.5,
+  "base_address": "0x21028be78e8f521214d24328715c1a8aadbac5a8",
+  "base_symbol": "CALLIE",
+  "base_decimals": 18,
+  "quote_address": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+  "quote_symbol": "WETH",
+  "fee_pct": 1.0,
+  "reserve_usd": 23794.0,
+  "fdv_usd": 297000.0,
+  "mcap_usd": 0,
+  "volume_h1_usd": 7539.0,
+  "volume_h24_usd": 7539.0,
+  "fee_tvl_day_pct": 7.6,
+  "tx_h1": 65,
+  "buyers_h1": 20,
+  "sellers_h1": 12,
+  "change_m5_pct": 1.2,
+  "change_h1_pct": 231.0,
+  "score": 62.4,
+  "holders": 160,
+  "gmgn_sell_tax_pct": 0,
+  "gmgn_buy_tax_pct": 0,
+  "gmgn_open_source": false,
+  "gmgn_launchpad": "noxa",
+  "gmgn_smart_wallets": 0,
+  "gmgn_bundler_wallets": 85,
+  "gmgn_rat_volume_pct": 0,
+  "gmgn_bundler_volume_pct": 27.98,
+  "gmgn_top10_pct": 17.3,
+  "gmgn_dev_status": "creator_close"
+}
+```
+
+Field notes:
+
+- `fee_tvl_day_pct` — projected daily fee/TVL %, computed as
+  `volume_h1 x 24 x fee_pct / reserve` (GeckoTerminal exposes no fee field;
+  v3 fees are deterministic).
+- `holders` + all `gmgn_*` — enrichment, absent on fetch failure (fail-open);
+  treat missing as unknown, never zero.
+- Screening already applied: WETH-quoted Uniswap v3 only; age 10m–24h;
+  reserve $8k–$500k; fee tier ≥ 0.25%; fee pace ≥ 5%/day; ≥30 txns and ≥12
+  buyers in h1; a "many buys, zero sells" pool is rejected (honeypot shape);
+  FDV $20k–$50M; momentum gates (same thresholds as the Solana venue);
+  Blockscout holders ≥ `ROBINHOOD_MIN_HOLDERS`; GMGN rat/bundler caps; GMGN
+  contract security **hard-rejects on positive** honeypot/blacklist/sell-tax
+  detection (unknown/null passes — the venue's one fail-closed divergence).

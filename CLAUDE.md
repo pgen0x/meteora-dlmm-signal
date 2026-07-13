@@ -29,8 +29,8 @@ set -a && . ./.env && set +a   # load env (fish: use bass or `env` prefix)
 ./install.sh ~/.hermes/profiles/dlmm   # wire assets into a Hermes profile + build
 ```
 
-Go tests exist only for `internal/deploy` (`go test ./internal/deploy/`);
-there is no Makefile. All config is environment-driven (`internal/config`,
+Go tests exist for `internal/deploy` and `internal/robinhood`
+(`go test ./internal/...`); there is no Makefile. All config is environment-driven (`internal/config`,
 defaults in `.env.example`); nothing is hardcoded except the screening
 thresholds.
 
@@ -56,6 +56,15 @@ one pass per enabled mode per `POLL_INTERVAL`.
     flags candidates whose ticker is contested by an established token with
     its own live DLMM pool (`is_pvp` + rival stats); never rejects.
   - `types.go` — JSON structs mirroring the discovery API response exactly.
+- `internal/robinhood` — second venue: newly-created Uniswap v3 WETH pools on
+  Robinhood Chain (chain ID 4663) via GeckoTerminal `new_pools`, screened by
+  its own `ModeParams` (`Fresh`) and safety gates (GMGN OpenAPI
+  `chain=robinhood` security + holder quality, Blockscout holders). Phase 1 is
+  **observe-only** (`ROBINHOOD_ENABLED`, batches journal to the log;
+  `ROBINHOOD_WEBHOOK` forwards them) and NEVER routes to `DEPLOY_CMD` — the
+  pipeline is Solana-only. One deliberate divergence from the fail-open rule:
+  a POSITIVE honeypot/blacklist/sell-tax detection hard-rejects; unknown still
+  passes. Plan + phase status: `docs/ROBINHOOD_CHAIN_PLAN.md`.
 - `internal/store` — `Seen` dedup set: Redis (`SetNX`, one key + TTL per pool)
   or in-memory map. Empty `REDIS_ADDR` selects in-memory.
 - `internal/webhook` — HMAC-SHA256 forwarder. Signature scheme
