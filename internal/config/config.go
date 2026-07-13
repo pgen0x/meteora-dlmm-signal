@@ -95,6 +95,38 @@ type Config struct {
 	// Enable once the subscription prompt handles the robinhood schema.
 	RobinhoodWebhook bool
 
+	// RobinhoodDeployEnabled switches the venue to direct-deploy, mirroring
+	// Solana's DEPLOY_CMD mode: instead of observing/forwarding, the daemon
+	// picks the highest-scoring candidate in each batch and mints it directly
+	// via RobinhoodExecutorCmd (uni_executor.js), bypassing the webhook
+	// entirely. There is no monitor/exit automation for this venue yet
+	// (docs/ROBINHOOD_CHAIN_PLAN.md Phase 3) — positions stay open until
+	// closed by hand, so RobinhoodMaxOpenPositions is the only safety brake.
+	// Off by default; requires RobinhoodExecutorCmd.
+	RobinhoodDeployEnabled bool
+	// RobinhoodExecutorCmd is the whitespace-split command line for
+	// uni_executor.js, e.g.
+	// "node /home/ubuntu/.hermes/profiles/<profile>/skills/solana-dlmm/scripts/uni_executor.js".
+	// Wallet keys stay in the profile .env — the executor loads them itself.
+	RobinhoodExecutorCmd string
+	// RobinhoodDeployTimeout bounds one uni_executor.js invocation
+	// (swap + mint can take a few blocks even at Robinhood Chain's ~100ms pace).
+	RobinhoodDeployTimeout time.Duration
+	// RobinhoodDeployAmountWeth is the fixed WETH size per deploy. Fixed
+	// (not balance-derived) until the venue has enough live data to justify
+	// dynamic sizing — start small.
+	RobinhoodDeployAmountWeth float64
+	// RobinhoodDeployStrategy is the uni_executor.js mint strategy:
+	// "balanced_tight" (two-sided, swaps half) or "weth_below" (one-sided).
+	RobinhoodDeployStrategy string
+	RobinhoodRangePct       float64
+	RobinhoodSlippagePct    float64
+	// RobinhoodMaxOpenPositions caps concurrent NPM positions this venue will
+	// hold. Checked via a live `positions` count before every deploy attempt
+	// (fail-closed on any read error) since nothing closes positions
+	// automatically yet. Keep this low until Phase 3 monitor exists.
+	RobinhoodMaxOpenPositions int
+
 	// DeployCmd switches the daemon to direct-deploy mode: instead of
 	// forwarding each batch to the Hermes agent webhook (LLM pick, observed at
 	// 19-54 min/decision), the daemon runs this command with
@@ -174,34 +206,42 @@ func getdur(key string, def time.Duration) time.Duration {
 // Load builds a Config from the environment with sane public defaults.
 func Load() Config {
 	return Config{
-		DiscoverURL:          getenv("METEORA_DISCOVER_URL", "https://pool-discovery-api.datapi.meteora.ag/pools"),
-		PollInterval:         getdur("POLL_INTERVAL", 60*time.Second),
-		WebhookURL:           getenv("HERMES_WEBHOOK_URL", "http://127.0.0.1:8646/webhooks/dlmm-signal"),
-		WebhookSecret:        getenv("HERMES_WEBHOOK_SECRET", "dlmm-signal-secret-change-me"),
-		RedisAddr:            getenv("REDIS_ADDR", ""),
-		RedisSeenKey:         getenv("REDIS_SEEN_KEY", "dlmm:signal:seen_pools"),
-		SeenTTL:              getdur("SEEN_TTL", 24*time.Hour),
-		TurnoverSeenTTL:      getdur("TURNOVER_SEEN_TTL", 2*time.Hour),
-		CasualSeenTTL:        getdur("CASUAL_SEEN_TTL", 6*time.Hour),
-		EnableCasual:         getbool("ENABLE_CASUAL", true),
-		EnableMultiday:       getbool("ENABLE_MULTIDAY", true),
-		EnableTurnover:       getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
-		EnableMomentumGate:   getbool("ENABLE_MOMENTUM_GATE", true),
-		EnableAuditGate:      getbool("ENABLE_AUDIT_GATE", true),
-		EnableGmgnGate:       getbool("ENABLE_GMGN_GATE", true),
-		GmgnAPIKey:           getenv("GMGN_API_KEY", ""),
-		GmgnMaxRatPct:        getfloat("GMGN_MAX_RAT_PCT", 40),
-		GmgnMaxBundlerPct:    getfloat("GMGN_MAX_BUNDLER_PCT", 40),
-		LoneMinScore:         getfloat("LONE_MIN_SCORE", 50),
-		EnablePVPCheck:       getbool("ENABLE_PVP_CHECK", true),
-		EnableRobinhood:      getbool("ROBINHOOD_ENABLED", false),
-		RobinhoodDiscoverURL: getenv("ROBINHOOD_DISCOVER_URL", ""),
-		RobinhoodWebhook:     getbool("ROBINHOOD_WEBHOOK", false),
-		RobinhoodSeenTTL:     getdur("ROBINHOOD_SEEN_TTL", 6*time.Hour),
-		RobinhoodMinHolders:  getint("ROBINHOOD_MIN_HOLDERS", 50),
-		DeployCmd:            getenv("DEPLOY_CMD", ""),
-		DeployTimeout:        getdur("DEPLOY_TIMEOUT", 5*time.Minute),
-		ReportCmd:            getenv("REPORT_CMD", ""),
-		ReportRejects:        getbool("REPORT_REJECTS", false),
+		DiscoverURL:               getenv("METEORA_DISCOVER_URL", "https://pool-discovery-api.datapi.meteora.ag/pools"),
+		PollInterval:              getdur("POLL_INTERVAL", 60*time.Second),
+		WebhookURL:                getenv("HERMES_WEBHOOK_URL", "http://127.0.0.1:8646/webhooks/dlmm-signal"),
+		WebhookSecret:             getenv("HERMES_WEBHOOK_SECRET", "dlmm-signal-secret-change-me"),
+		RedisAddr:                 getenv("REDIS_ADDR", ""),
+		RedisSeenKey:              getenv("REDIS_SEEN_KEY", "dlmm:signal:seen_pools"),
+		SeenTTL:                   getdur("SEEN_TTL", 24*time.Hour),
+		TurnoverSeenTTL:           getdur("TURNOVER_SEEN_TTL", 2*time.Hour),
+		CasualSeenTTL:             getdur("CASUAL_SEEN_TTL", 6*time.Hour),
+		EnableCasual:              getbool("ENABLE_CASUAL", true),
+		EnableMultiday:            getbool("ENABLE_MULTIDAY", true),
+		EnableTurnover:            getbool("ENABLE_TURNOVER", false), // experimental — see meteora.Turnover
+		EnableMomentumGate:        getbool("ENABLE_MOMENTUM_GATE", true),
+		EnableAuditGate:           getbool("ENABLE_AUDIT_GATE", true),
+		EnableGmgnGate:            getbool("ENABLE_GMGN_GATE", true),
+		GmgnAPIKey:                getenv("GMGN_API_KEY", ""),
+		GmgnMaxRatPct:             getfloat("GMGN_MAX_RAT_PCT", 40),
+		GmgnMaxBundlerPct:         getfloat("GMGN_MAX_BUNDLER_PCT", 40),
+		LoneMinScore:              getfloat("LONE_MIN_SCORE", 50),
+		EnablePVPCheck:            getbool("ENABLE_PVP_CHECK", true),
+		EnableRobinhood:           getbool("ROBINHOOD_ENABLED", false),
+		RobinhoodDiscoverURL:      getenv("ROBINHOOD_DISCOVER_URL", ""),
+		RobinhoodWebhook:          getbool("ROBINHOOD_WEBHOOK", false),
+		RobinhoodDeployEnabled:    getbool("ROBINHOOD_DEPLOY_ENABLED", false),
+		RobinhoodExecutorCmd:      getenv("ROBINHOOD_EXECUTOR_CMD", ""),
+		RobinhoodDeployTimeout:    getdur("ROBINHOOD_DEPLOY_TIMEOUT", 2*time.Minute),
+		RobinhoodDeployAmountWeth: getfloat("ROBINHOOD_DEPLOY_AMOUNT_WETH", 0.003),
+		RobinhoodDeployStrategy:   getenv("ROBINHOOD_DEPLOY_STRATEGY", "balanced_tight"),
+		RobinhoodRangePct:         getfloat("ROBINHOOD_RANGE_PCT", 10),
+		RobinhoodSlippagePct:      getfloat("ROBINHOOD_SLIPPAGE_PCT", 5),
+		RobinhoodMaxOpenPositions: getint("ROBINHOOD_MAX_OPEN_POSITIONS", 1),
+		RobinhoodSeenTTL:          getdur("ROBINHOOD_SEEN_TTL", 6*time.Hour),
+		RobinhoodMinHolders:       getint("ROBINHOOD_MIN_HOLDERS", 50),
+		DeployCmd:                 getenv("DEPLOY_CMD", ""),
+		DeployTimeout:             getdur("DEPLOY_TIMEOUT", 5*time.Minute),
+		ReportCmd:                 getenv("REPORT_CMD", ""),
+		ReportRejects:             getbool("REPORT_REJECTS", false),
 	}
 }

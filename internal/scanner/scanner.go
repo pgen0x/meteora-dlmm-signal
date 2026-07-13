@@ -62,19 +62,21 @@ func rejectSummary(rejects map[string]int) string {
 // Scanner polls the Meteora discovery API for each enabled mode, screens pools,
 // dedups, and forwards newly-qualifying pools to the Hermes webhook.
 type Scanner struct {
-	cfg  config.Config
-	seen *store.Seen
-	fwd  *webhook.Forwarder
-	dep  *deploy.Runner
+	cfg   config.Config
+	seen  *store.Seen
+	fwd   *webhook.Forwarder
+	dep   *deploy.Runner
+	rhDep *robinhood.Runner
 }
 
 // New wires a Scanner from config.
 func New(cfg config.Config) *Scanner {
 	return &Scanner{
-		cfg:  cfg,
-		seen: store.New(cfg.RedisAddr, cfg.RedisSeenKey, cfg.SeenTTL),
-		fwd:  webhook.New(cfg.WebhookURL, cfg.WebhookSecret),
-		dep:  deploy.New(cfg.DeployCmd, cfg.ReportCmd, cfg.DeployTimeout),
+		cfg:   cfg,
+		seen:  store.New(cfg.RedisAddr, cfg.RedisSeenKey, cfg.SeenTTL),
+		fwd:   webhook.New(cfg.WebhookURL, cfg.WebhookSecret),
+		dep:   deploy.New(cfg.DeployCmd, cfg.ReportCmd, cfg.DeployTimeout),
+		rhDep: robinhood.New(cfg.RobinhoodExecutorCmd, cfg.RobinhoodDeployTimeout),
 	}
 }
 
@@ -135,6 +137,49 @@ func rhBatchSummary(batch []*robinhood.Candidate) string {
 // (Phase 1, signal-only — see docs/ROBINHOOD_CHAIN_PLAN.md). Batches go to
 // the webhook sink ONLY: the direct-deploy pipeline speaks Solana and must
 // never receive an EVM candidate until the Phase 2 executor lands.
+// robinhoodDeploy picks the batch's single highest-scoring candidate and
+// mints it via uni_executor.js. There is no re-ranking pipeline like
+// dlmm_pipeline.py here — screen.go already scores every candidate, so the
+// pick is a plain argmax. Fails closed on any OpenPositions read error: with
+// no monitor yet to close stale positions, an unknown count must never be
+// treated as "room to deploy".
+func (s *Scanner) robinhoodDeploy(ctx context.Context, mode string, batch []*robinhood.Candidate) {
+	best := batch[0]
+	for _, c := range batch[1:] {
+		if c.Score > best.Score {
+			best = c
+		}
+	}
+
+	open, err := s.rhDep.OpenPositions(ctx)
+	if err != nil {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED (position count unknown, failing closed): %v", mode, err)
+		return
+	}
+	if open >= s.cfg.RobinhoodMaxOpenPositions {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED %s (%s): at position cap %d/%d",
+			mode, best.BaseSymbol, best.Pool[:10], open, s.cfg.RobinhoodMaxOpenPositions)
+		return
+	}
+
+	log.Printf("scanner[%s]: DEPLOY PICK %s (%s) score=%.0f amount=%g WETH strategy=%s",
+		mode, best.BaseSymbol, best.Pool[:10], best.Score, s.cfg.RobinhoodDeployAmountWeth, s.cfg.RobinhoodDeployStrategy)
+
+	out, err := s.rhDep.Deploy(ctx, best.Pool, s.cfg.RobinhoodDeployAmountWeth, s.cfg.RobinhoodRangePct, s.cfg.RobinhoodSlippagePct, s.cfg.RobinhoodDeployStrategy)
+	if err != nil {
+		log.Printf("scanner[%s]: DEPLOY FAILED %s (%s): %v\n%s", mode, best.BaseSymbol, best.Pool[:10], err, out)
+		return
+	}
+	deployed := robinhood.Deployed(out)
+	summary := robinhood.Summarize(out)
+	log.Printf("scanner[%s]: DEPLOY done (deployed=%v) %s\n%s", mode, deployed, best.BaseSymbol, summary)
+	if deployed {
+		if rerr := s.dep.Report(ctx, summary); rerr != nil {
+			log.Printf("scanner[%s]: report delivery failed: %v", mode, rerr)
+		}
+	}
+}
+
 func (s *Scanner) pollRobinhood(ctx context.Context, mp robinhood.ModeParams) {
 	pools, err := robinhood.FetchNewPools(s.cfg.RobinhoodDiscoverURL)
 	if err != nil {
@@ -214,7 +259,12 @@ func (s *Scanner) pollRobinhood(ctx context.Context, mp robinhood.ModeParams) {
 
 	sent := 0
 	if len(batch) > 0 {
-		if !s.cfg.RobinhoodWebhook {
+		if s.cfg.RobinhoodDeployEnabled && s.rhDep.Enabled() {
+			// Direct deploy (Phase 2): bypasses OBSERVE/webhook entirely,
+			// mirroring how Solana's DEPLOY_CMD bypasses its webhook.
+			s.robinhoodDeploy(ctx, mp.Mode, batch)
+			sent = len(batch)
+		} else if !s.cfg.RobinhoodWebhook {
 			// Observe-only (Phase 1 default): journal the full payload so the
 			// gate thresholds can be calibrated from logs, without exposing the
 			// Solana-only Hermes subscription / deploy pipeline to EVM batches.
