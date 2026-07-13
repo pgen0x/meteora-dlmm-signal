@@ -29,7 +29,7 @@ Status: **planning** (branch `feat/robinhood-chain-support`, 2026-07-13)
 | Meteora discovery API | **GeckoTerminal** `/networks/robinhood/new_pools` (+ `/pools` trending) | 48h window, public tier 30 req/min; also mirrored via CoinGecko `/onchain` paid tier |
 | DexScreener momentum gate | **DexScreener supports `robinhood`** chain slug (`dexscreener.com/robinhood`) | `momentum.go` mostly reusable — same API, different chainId |
 | Jupiter token audit | **GoPlus Token Security API** (60+ EVM chains; verify 4663 support) + **honeypot.is** | honeypot/sell-tax simulation is the EVM must-have; Blockscout API for holder distribution & contract verification |
-| GMGN smart money | GMGN is Solana/EVM-multichain — verify robinhood support; else skip (advisory gate, fail-open) | |
+| GMGN smart money | **GMGN fully supports Robinhood Chain** (web/app/API, `gmgn.ai/security?chain=robinhood`) — confirmed 2026-07 | reuse `gmgn.go` with chain param; GMGN security data can also backstop the honeypot gate |
 | Meteora DLMM SDK (JS executor) | **Uniswap v3 `NonfungiblePositionManager`** (mint/increase/decrease/collect) via viem + `@uniswap/v3-sdk`; v4 SDK later if needed | v3 first: Noxa launches land on v3, position model closest to DLMM bins |
 | Solana wallet | EVM keypair; gas in ETH; capital in **WETH** | Need bridge step to fund; ERC-20 approval hygiene |
 
@@ -39,6 +39,13 @@ Same alpha thesis as Solana: catch newly-created pools early, LP into a tight
 concentrated range, harvest fees, exit on velocity/trailing rules. Uniswap v3
 concentrated liquidity ≈ DLMM bins (ticks instead of bins). Differences that
 change behavior:
+
+> True bin-based DLMM **does exist on Robinhood Chain**: AEON Protocol hosts
+> LFJ (Trader Joe) **Liquidity Book** pools — the model Meteora's DLMM was
+> ported from — plus Algebra Integral CL pools. But launch-week volume (and
+> therefore fee capture) concentrates on Uniswap, and launchpads (Noxa)
+> graduate into Uniswap v3. Primary venue = Uniswap v3; AEON Liquidity Book
+> is a secondary venue to evaluate once its new-pool flow is meaningful.
 
 - **Fee model**: v3 fee tier is fixed per pool (1% on Noxa launches); no
   dynamic fees like DLMM. Fee/TVL gate still computable from GeckoTerminal
@@ -156,3 +163,5 @@ venue-agnostic in shape; screening/discovery/executor are venue-specific.
 - [hood.fun launch announcement](https://technologymagazine.com/globenewswire/3324698)
 - [CryptoSlate — memecoin wave / $150M cat coin](https://cryptoslate.com/robinhood-launched-a-wall-street-layer-2-chain-and-the-market-crowned-a-150m-cat-coin-first/) · [CryptoTimes — active addresses record](https://www.cryptotimes.io/2026/07/09/robinhood-chain-active-addresses-hit-record-high-amid-meme-coin-frenzy/)
 - [GoPlus Token Security API](https://gopluslabs.io/en/token-security-api) · [response docs](https://docs.gopluslabs.io/reference/response-details)
+- [GMGN — Robinhood Chain live, API coverage](https://x.com/gmgnai/status/2075215360580603990) · [GMGN security page (robinhood)](https://gmgn.ai/security?chain=robinhood)
+- [LFJ Liquidity Book primer (EVM DLMM)](https://docs.lfj.gg/lfj-dex/liquidity/liquidity_book-_primer_6893873) · [AEON Protocol on DefiLlama (vAMM + Algebra CL + Liquidity Book pools)](https://defillama.com/protocol/aeon-protocol)
