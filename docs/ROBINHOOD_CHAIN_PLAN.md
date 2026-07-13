@@ -174,14 +174,35 @@ Phase 3 monitor exits (trailing TP/SL, fast-out — port the Solana rulebook).
   (same secrets policy as Solana keys — never in repo).
 - Start `DRY_RUN`, then tiny fixed size (e.g. 0.005–0.01 WETH) real deploys.
 
-### Phase 3 — monitor: exits
-- Extend `dlmm_monitor.py` with a chain-dispatch layer or add
-  `uni_monitor.py` sharing the exit rulebook (trailing TP/SL, fast-out
-  velocity exit, phantom-PnL guards). Position state from
-  `NonfungiblePositionManager` + pool slot0 via RPC (no subgraph dependency
-  in the hot path; Blockscout as fallback enrichment).
-- PnL in WETH terms; fee collection cadence decision (collect on exit only,
-  v3 fees don't auto-compound).
+### Phase 3 — monitor: exits ✅ (landed 2026-07-13, commit 77cdc67)
+- `assets/skill/scripts/uni_monitor.py` — one-shot scan, run every 60s by
+  `uni_monitor_loop.sh` under user systemd unit **`rh-dlmm-monitor.service`**
+  (enabled + active). Ports dlmm_monitor.py's exit rulebook verbatim (same
+  percent thresholds per operator "same like solana"): emergency SL, hard SL
+  -25%, hard TP +50%, trailing profit-ratchet (arms +5%, `trailing_floor_pct`
+  identical shape), fast-out velocity (-3% 5m dump while armed), sustained
+  downtrend (1h ≤ -5% AND pnl ≤ -5%), out-of-range timeout 30m.
+- PnL is WETH-denominated. Position value comes from `uni_executor.js state`:
+  a **simulated** full `decreaseLiquidity` (reuses the pool contract's own
+  tick math — no reimplemented LiquidityAmounts) + owed fees, converted to
+  WETH via `sqrtPriceX96`, compared to the journaled entry cost basis
+  (`memories/uni_positions.jsonl`, written on each real mint). Momentum
+  (m5/h1) from GeckoTerminal per pool, best-effort/fail-open.
+- The **phantom-PnL guard was intentionally NOT ported**: it existed for the
+  Meteora portfolio API returning pnl=-100 on unindexed positions. Here PnL
+  is computed from on-chain state we read directly, so that failure mode
+  doesn't exist.
+- Close authority: `uni_executor.js close` refuses without `UNI_CLOSE_AUTH=1`
+  (set only by the monitor) or `--force` (manual) — the monitor is the sole
+  automated closer, mirroring Solana's `DLMM_CLOSE_AUTH`. On close: swap token
+  leg back to WETH, journal to `memories/uni_closes.jsonl`, hermes alert.
+- Peak/OOR-timer state persists in `memories/uni_monitor_state.json` across
+  ticks. `DRY_RUN=true` tracks peaks + prints decisions but simulates closes.
+- With the monitor live, `ROBINHOOD_MAX_OPEN_POSITIONS` is no longer the
+  *only* safety brake — positions now auto-close on the exit rules. Safe to
+  set `DRY_RUN=false` after observing one dry-run deploy+monitor cycle.
+
+Original Phase 3 sketch (superseded by the above):
 
 ### Phase 4 — calibrate + harden
 - Tune gates from Phase 1–2 journals (expect different scarcity profile than
