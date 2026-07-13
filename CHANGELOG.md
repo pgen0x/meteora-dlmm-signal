@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.11.2...v1.12.0) (2026-07-13)
+
+
+### Features
+
+* deterministic batch picker (direct deploy mode) ([d438b9e](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/d438b9eb9ec99639d5c81f91a4aaa2054f49dfd3))
+
 ## [1.11.2](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.11.1...v1.11.2) (2026-07-10)
 
 
