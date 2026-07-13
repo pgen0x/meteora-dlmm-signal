@@ -127,7 +127,17 @@ diverge too much for a common `Discover()` signature to earn its keep.
   journaled batches. Observed quirk to watch: copycat same-symbol launches
   (two CALLIE pools in one cycle) — the venue may need a PVP-style flag.
 
-### Phase 2 — executor: deploy path
+### Phase 2 — executor: deploy path (executor ✅ 2026-07-13; live spike + dispatch pending)
+Landed: `assets/skill/scripts/uni_executor.js` (viem-only, no @uniswap SDKs).
+Contract addresses verified on-chain (NPM.factory + NPM.WETH9 cross-checked):
+factory `0x1f7d…2efa`, NPM `0x7399…e0d3`, SwapRouter02 `0xcaf6…5cb2`.
+Strategies: `balanced_tight` (swap half, ±range% band) and `weth_below`
+(one-sided WETH band adjacent to tick, no swap). Exact-amount approvals only.
+Wallet: `EVM_PRIVATE_KEY` in profile `.env` accepts a dedicated 0x-hex key OR
+the base58 Solana secret (ed25519 seed reused as secp256k1 scalar) — the
+Solana-derived account is the current setup. Read-only + DRY_RUN paths tested
+live; **remaining**: fund wallet → manual wrap/deploy/close spike at dust
+size → pipeline `--chain` dispatch + monitor exits (Phase 3).
 - `assets/skill/scripts/uni_executor.js` (or `.ts`) — viem +
   `@uniswap/v3-sdk`: wrap ETH→WETH, swap for target token, mint position
   (two-sided `balanced_tight` analog and one-sided above-price reseed),

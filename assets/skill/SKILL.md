@@ -95,6 +95,20 @@ gate (bin-array rent, entry timing) rejects the top pick. Used by the daemon's
 *   `node ~/.hermes/profiles/<profile>/skills/solana-dlmm/scripts/dlmm_executor.js close <position_address>`
 *   `node ~/.hermes/profiles/<profile>/skills/solana-dlmm/scripts/dlmm_executor.js positions`
 
+### 5. `uni_executor.js` — Robinhood Chain (Uniswap v3) Executor
+**Purpose**: EVM sibling of `dlmm_executor.js` for the Robinhood Chain venue
+(chain ID 4663, see `docs/ROBINHOOD_CHAIN_PLAN.md`). Wraps ETH, swaps via
+SwapRouter02, mints/collects/closes NonfungiblePositionManager positions.
+Reads `EVM_PRIVATE_KEY` from the profile `.env` — either a 0x-hex secp256k1
+key or a base58 Solana secret key (the 32-byte seed is reused as the EVM key
+so one funded identity serves both venues). `DRY_RUN=true` skips all sends.
+**Commands** (same profile path prefix as above):
+*   `uni_executor.js address` — derived EVM address (fund this with bridged ETH)
+*   `uni_executor.js balance` / `wrap --amount 0.05` — ETH/WETH balances, ETH→WETH
+*   `uni_executor.js quote --pool 0x..` — pool tick/fee/price state
+*   `uni_executor.js deploy --pool 0x.. --amount 0.01 [--strategy balanced_tight|weth_below] [--range-pct 10] [--slippage 5]`
+*   `uni_executor.js positions` / `collect --id N` / `close --id N [--no-swap-out]`
+
 ---
 
 ## Redis State Keys
