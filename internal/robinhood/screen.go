@@ -30,10 +30,16 @@ type ModeParams struct {
 // Fresh is the starter mode: young Uniswap v3 WETH pools already showing
 // two-sided flow. One mode only until the signal-only journals justify more.
 var Fresh = ModeParams{
-	Mode:          "rh-fresh",
-	MinAge:        3 * time.Minute,
-	MaxAge:        24 * time.Hour,
-	MinReserveUSD: 8000,
+	Mode:   "rh-fresh",
+	MinAge: 3 * time.Minute,
+	MaxAge: 24 * time.Hour,
+	// 8000 (initial guess, set by analogy to Solana casual mode) killed 73% of
+	// all pools before any other gate ran — live sample 2026-07-13 showed
+	// median reserve ~$3,959, only 6/16 pools clearing $8k. 2500 lets the
+	// bulk of real launches through to the gates that actually matter
+	// (txn/buyer counts, honeypot shape, GMGN security) — see
+	// docs/ROBINHOOD_CHAIN_PLAN.md calibration notes.
+	MinReserveUSD: 2500,
 	MaxReserveUSD: 500000,
 	MinFeePct:     0.25,
 	MinFeeTVLDay:  5.0, // ~5%/day pace, between casual (~4.8) and turnover (~7.2) bars
