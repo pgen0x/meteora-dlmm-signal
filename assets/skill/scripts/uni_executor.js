@@ -277,7 +277,15 @@ async function send(wallet, req, label) {
     console.log(`[dry-run] would send: ${label}`);
     return "DRY_RUN_TX_HASH";
   }
-  const hash = await wallet.writeContract(req);
+  // writeContract takes the node's gas estimate verbatim, but pool state can
+  // move between estimate and inclusion (extra tick crossings on a hot pool),
+  // so pad 30%. A failed estimate falls through to writeContract, whose own
+  // simulation surfaces the actual revert reason.
+  const gas = await pub
+    .estimateContractGas({ ...req, account: req.account ?? wallet.account })
+    .then((g) => (g * 130n) / 100n)
+    .catch(() => undefined);
+  const hash = await wallet.writeContract(gas ? { ...req, gas } : req);
   const rcpt = await pub.waitForTransactionReceipt({ hash, timeout: 120_000 });
   if (rcpt.status !== "success") throw new Error(`${label} reverted: ${hash}`);
   console.log(`${label}: ${hash}`);
@@ -703,6 +711,12 @@ async function cmdState(account) {
   pool = getAddress(pool);
   const st = await poolState(pool);
   const wethIs0 = st.token0 === WETH;
+  // Pair label for operator-facing reports — the monitor's card names
+  // positions "WETH / SYM", not by NPM tokenId.
+  const tokenAddr = wethIs0 ? token1 : token0;
+  const tokenSymbol = await pub.readContract({
+    address: tokenAddr, abi: erc20Abi, functionName: "symbol",
+  }).catch(() => "?");
 
   let amount0 = owed0, amount1 = owed1;
   if (liquidity > 0n) {
@@ -725,7 +739,8 @@ async function cmdState(account) {
   const ageMin = entry ? (Math.floor(Date.now() / 1000) - entry.ts) / 60 : null;
 
   console.log(JSON.stringify({
-    tokenId: id.toString(), pool,
+    tokenId: id.toString(), pool, pair: `WETH / ${tokenSymbol}`,
+    token: tokenAddr, tokenSymbol,
     tick, tickLower, tickUpper, inRange, liquidity: liquidity.toString(),
     valueWeth, entryWeth, pnlPct, ageMin,
   }));
