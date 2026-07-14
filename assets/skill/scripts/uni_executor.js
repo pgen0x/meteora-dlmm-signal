@@ -12,6 +12,7 @@
 //   node uni_executor.js positions                     # owned NPM positions
 //   node uni_executor.js collect --id 123              # collect fees only
 //   node uni_executor.js close --id 123 [--no-swap-out]  # remove + collect + burn (+ token->WETH)
+//   node uni_executor.js sweep [--token 0x..]          # retry the token->WETH sell for stranded bags
 //
 // Env (Hermes profile .env): EVM_PRIVATE_KEY — either a 0x-prefixed 32-byte
 // hex key, or a base58 Solana secret key (the 32-byte ed25519 seed is reused
@@ -47,11 +48,29 @@ const WETH = getAddress("0x0bd7d308f8e1639fab988df18a8011f41eacad73");
 const NPM = getAddress("0x73991a25c818bf1f1128deaab1492d45638de0d3");
 const ROUTER = getAddress("0xcaf681a66d020601342297493863e78c959e5cb2");
 const FACTORY = getAddress("0x1f7d7550b1b028f7571e69a784071f0205fd2efa");
+const ZERO = "0x0000000000000000000000000000000000000000";
+
+// Every Uniswap v3 fee tier. The exit sell walks all of them, not just the
+// tier of the pool we LP'd: a launch pool's liquidity can be pulled out from
+// under us while a rival tier still bids on the same token.
+const FEE_TIERS = [100, 500, 3000, 10000];
+
+// Slippage floor for the exit sell. Wide on purpose — the alternative to a bad
+// fill on a dumping memecoin is no fill, and no fill means the bag rots.
+const EXIT_SLIPPAGE_PCT = parseFloat(process.env.UNI_EXIT_SLIPPAGE_PCT || "15");
 
 // Position entry journal: uni_monitor.py reads cost basis (WETH deployed) +
 // entry timestamp from here to compute PnL and age, the EVM analog of the
 // Meteora portfolio API the Solana monitor queries. One JSON line per mint.
 const POS_JOURNAL = path.join(PROFILE_DIR, "memories", "uni_positions.jsonl");
+
+// Stranded-bag journal. A close is three on-chain steps (decrease, collect,
+// burn) plus a sell, and only the first three are guaranteed to work: the pool
+// can be rugged to zero liquidity by the time we try to sell back out, and then
+// exactInputSingle reverts. The position is gone but the tokens are real and
+// still in the wallet, so they get written here and retried by `sweep` — an
+// unsellable bag is a fact to schedule around, not an error to throw away.
+const STRANDED_JOURNAL = path.join(PROFILE_DIR, "memories", "uni_stranded.jsonl");
 
 const chain = {
   id: CHAIN_ID,
@@ -113,6 +132,49 @@ function journalEntry(rec) {
   } catch (e) {
     console.error(`warn: could not journal position entry: ${e.message}`);
   }
+}
+
+// journalStranded appends one stranded-bag event. Append-only: the newest line
+// for a token wins, so a `resolved: true` line retires an earlier open one.
+function journalStranded(rec) {
+  try {
+    fs.mkdirSync(path.dirname(STRANDED_JOURNAL), { recursive: true });
+    // ts/timestamp go LAST: a re-journaled bag is spread from its previous line
+    // and would otherwise carry that line's timestamp forward, so every retry
+    // and even the final sale would be stamped with the moment the bag was
+    // first seen. Each line records when THAT line was written.
+    fs.appendFileSync(STRANDED_JOURNAL, JSON.stringify({
+      ...rec,
+      ts: Math.floor(Date.now() / 1000),
+      timestamp: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+    }) + "\n");
+  } catch (e) {
+    console.error(`warn: could not journal stranded bag: ${e.message}`);
+  }
+}
+
+// retryDelay backs a failing bag off exponentially: 1m, 2m, 4m ... capped at
+// STRANDED_MAX_BACKOFF_S. A rugged pool can in principle be re-seeded by
+// another LP, so a bag is never permanently written off — but re-offering a
+// zero-liquidity token every 60s forever is ~5 RPC reads per bag per tick of
+// pure noise, and the noise grows with every future rug. Backoff keeps the
+// hopeless ones cheap without ever giving up on them.
+const STRANDED_MAX_BACKOFF_S = parseInt(process.env.UNI_STRANDED_MAX_BACKOFF_S || "3600", 10);
+function retryDelay(attempts) {
+  return Math.min(60 * 2 ** Math.max(0, attempts - 1), STRANDED_MAX_BACKOFF_S);
+}
+
+// openStranded returns the still-unsold bags, newest-line-wins per token.
+function openStranded() {
+  const latest = new Map();
+  try {
+    for (const line of fs.readFileSync(STRANDED_JOURNAL, "utf8").trim().split("\n")) {
+      if (!line) continue;
+      const r = JSON.parse(line);
+      latest.set(getAddress(r.token), r);
+    }
+  } catch { /* no journal yet */ }
+  return [...latest.values()].filter((r) => !r.resolved);
 }
 
 // resolveMintedTokenId pins the tokenId of the position just minted in `rcpt`.
@@ -197,6 +259,68 @@ async function ensureAllowance(wallet, owner, token, spender, amount) {
   if (current >= amount) return;
   // Exact-amount approval on purpose — no unlimited allowances on a memecoin venue.
   await send(wallet, { address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount], account: wallet.account, chain }, `approve ${spender.slice(0, 10)}`);
+}
+
+// sellTokenForWeth unloads `amount` of `token` into WETH, trying `preferredFee`
+// first and then every other v3 tier.
+//
+// It SIMULATES each tier before sending. That simulation is the whole point:
+// the sell is the one leg of a close that routinely fails on this venue (dead
+// pool after a rug, sell tax, blacklist), and a raw send would revert inside
+// send() and throw — aborting a close whose decrease/collect/burn had already
+// landed. Since no QuoterV2 is published for Robinhood Chain, a static call to
+// SwapRouter02 itself is the quote: it reverts for exactly the reasons a live
+// sell would, and its return value is the amountOut we set the slippage floor
+// against. Never throws — returns {ok:false, reason} so the caller decides.
+async function sellTokenForWeth(wallet, account, token, amount, preferredFee) {
+  if (amount <= 0n) return { ok: false, reason: "zero balance" };
+  const tiers = [...new Set([preferredFee, ...FEE_TIERS].filter((f) => f != null).map(Number))];
+  const failures = [];
+
+  for (const fee of tiers) {
+    const pool = await pub.readContract({
+      address: FACTORY, abi: factoryAbi, functionName: "getPool", args: [token, WETH, fee],
+    }).catch(() => null);
+    if (!pool || getAddress(pool) === ZERO) { failures.push(`${fee}: no pool`); continue; }
+
+    // The router must be able to pull the tokens before the simulation is
+    // meaningful — without the allowance every tier "reverts" with STF and we
+    // would journal a sellable bag as stranded.
+    try {
+      await ensureAllowance(wallet, account.address, token, ROUTER, amount);
+    } catch (e) {
+      return { ok: false, reason: `approve failed: ${e.shortMessage || e.message}` };
+    }
+
+    let quoted;
+    try {
+      const sim = await pub.simulateContract({
+        address: ROUTER, abi: routerAbi, functionName: "exactInputSingle",
+        args: [{ tokenIn: token, tokenOut: WETH, fee, recipient: account.address, amountIn: amount, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n }],
+        account: account.address, chain,
+      });
+      quoted = sim.result;
+    } catch (e) {
+      failures.push(`${fee}: ${(e.shortMessage || e.message || "reverted").split("\n")[0].slice(0, 60)}`);
+      continue;
+    }
+    if (quoted === 0n) { failures.push(`${fee}: quote 0`); continue; }
+
+    const minOut = (quoted * BigInt(Math.floor((100 - EXIT_SLIPPAGE_PCT) * 100))) / 10000n;
+    try {
+      const tx = await send(wallet, {
+        address: ROUTER, abi: routerAbi, functionName: "exactInputSingle",
+        args: [{ tokenIn: token, tokenOut: WETH, fee, recipient: account.address, amountIn: amount, amountOutMinimum: minOut, sqrtPriceLimitX96: 0n }],
+        account: wallet.account, chain,
+      }, `sell token -> WETH (fee ${fee}, ~${formatEther(quoted)} WETH)`);
+      return { ok: true, amountOut: quoted, fee, tx };
+    } catch (e) {
+      // Simulated clean but reverted on-chain: the pool moved under us between
+      // the two calls. Fall through to the next tier rather than throwing.
+      failures.push(`${fee}: send reverted (${(e.shortMessage || e.message).slice(0, 40)})`);
+    }
+  }
+  return { ok: false, reason: failures.join("; ") || "no route" };
 }
 
 async function poolState(pool) {
@@ -468,22 +592,112 @@ async function cmdClose(wallet, account) {
   }, `collect #${id}`);
   await send(wallet, { address: NPM, abi: npmAbi, functionName: "burn", args: [id], account: wallet.account, chain }, `burn #${id}`);
 
-  // Swap the freed token side back to WETH unless told otherwise, mirroring
-  // the Solana monitor's auto-swap-to-SOL on close.
+  // Sell the freed token side back to WETH unless told otherwise, mirroring the
+  // Solana monitor's auto-swap-to-SOL on close.
+  //
+  // The position is already burned by this point, so the sell must NOT be able
+  // to fail the close. It used to: a revert here (rugged pool, sell tax) threw
+  // out of cmdClose before it printed its result, so uni_monitor.py journaled
+  // success=false on a position that was in fact gone — and the tokens sat in
+  // the wallet forever with nothing to retry them. 4 of the first 9 live closes
+  // stranded their bag that way. Now the sell reports itself instead: the close
+  // is a success (it is — the liquidity is out), and an unsold bag becomes a
+  // stranded-journal entry for `sweep` to keep retrying.
+  let sold = null;
+  let stranded = null;
   if (!hasFlag("no-swap-out") && !DRY_RUN) {
     const token = token0 === WETH ? token1 : token0;
-    const fee = p[4];
     const bal = await pub.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] });
     if (bal > 0n) {
-      await ensureAllowance(wallet, account.address, token, ROUTER, bal);
-      await send(wallet, {
-        address: ROUTER, abi: routerAbi, functionName: "exactInputSingle",
-        args: [{ tokenIn: token, tokenOut: WETH, fee, recipient: account.address, amountIn: bal, amountOutMinimum: 0n, sqrtPriceLimitX96: 0n }],
-        account: wallet.account, chain,
-      }, "swap token -> WETH");
+      const sym = await pub.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }).catch(() => "?");
+      const r = await sellTokenForWeth(wallet, account, token, bal, Number(p[4]));
+      if (r.ok) {
+        sold = { token, symbol: sym, weth_out: formatEther(r.amountOut), fee: r.fee, tx: r.tx };
+      } else {
+        stranded = {
+          tokenId: id.toString(), token, symbol: sym, amount: bal.toString(),
+          reason: r.reason, resolved: false,
+          attempts: 1, next_try: Math.floor(Date.now() / 1000) + retryDelay(1),
+        };
+        journalStranded(stranded);
+        console.error(`warn: could not sell ${sym} on close #${id} — ${r.reason} (bag journaled for sweep)`);
+      }
     }
   }
-  console.log(JSON.stringify({ success: true, closed: id.toString() }));
+  console.log(JSON.stringify({
+    success: true, closed: id.toString(),
+    swapped_out: !!sold,
+    weth_out: sold ? sold.weth_out : "0",
+    stranded,
+  }));
+}
+
+// cmdSweep retries the exit sell for every bag the close path could not unload.
+// Run every monitor tick: a pool that was dead at close time can be revived by
+// another LP, and a sell that reverted on a transient can just work next time.
+async function cmdSweep(wallet, account) {
+  const only = arg("token", "");
+  let bags = openStranded();
+  if (only) {
+    const t = getAddress(only);
+    const known = bags.find((b) => getAddress(b.token) === t);
+    if (known) {
+      bags = [known];
+    } else {
+      // An operator sweeping a token by hand is asserting it IS stranded, so
+      // adopt it into the journal before trying to sell. If this sell fails the
+      // monitor's per-tick sweep inherits it and keeps retrying — a manual
+      // attempt should never be the only attempt.
+      const [sym, bal] = await Promise.all([
+        pub.readContract({ address: t, abi: erc20Abi, functionName: "symbol" }).catch(() => "?"),
+        pub.readContract({ address: t, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
+      ]);
+      const bag = { tokenId: null, token: t, symbol: sym, amount: bal.toString(), reason: "adopted by manual sweep", resolved: false };
+      journalStranded(bag);
+      bags = [bag];
+    }
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const results = [];
+  let waiting = 0;
+  for (const bag of bags) {
+    // An explicit --token sweep is the operator overriding the schedule, so it
+    // ignores the backoff. The per-tick sweep respects it.
+    if (!only && bag.next_try && bag.next_try > now) { waiting++; continue; }
+
+    const token = getAddress(bag.token);
+    const bal = await pub.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] });
+    if (bal === 0n) {
+      // Sold or moved by hand — retire it so the sweep stops retrying forever.
+      journalStranded({ ...bag, amount: "0", resolved: true, note: "balance is zero" });
+      results.push({ token, symbol: bag.symbol, resolved: true, weth_out: "0", note: "balance is zero" });
+      continue;
+    }
+    if (DRY_RUN) {
+      results.push({ token, symbol: bag.symbol, dry_run: true, amount: bal.toString() });
+      continue;
+    }
+    const r = await sellTokenForWeth(wallet, account, token, bal, bag.fee ?? null);
+    if (r.ok) {
+      journalStranded({ ...bag, amount: bal.toString(), resolved: true, weth_out: formatEther(r.amountOut), fee: r.fee, tx: r.tx });
+      results.push({ token, symbol: bag.symbol, resolved: true, weth_out: formatEther(r.amountOut), fee: r.fee, tx: r.tx });
+    } else {
+      const attempts = (bag.attempts || 0) + 1;
+      const delay = retryDelay(attempts);
+      journalStranded({ ...bag, amount: bal.toString(), reason: r.reason, resolved: false, attempts, next_try: now + delay });
+      results.push({ token, symbol: bag.symbol, resolved: false, amount: bal.toString(), reason: r.reason, attempts, retry_in_s: delay });
+    }
+  }
+  const recovered = results.filter((r) => r.resolved && r.weth_out !== "0");
+  console.log(JSON.stringify({
+    success: true,
+    swept: results.length,
+    backing_off: waiting,
+    recovered_weth: recovered.reduce((a, r) => a + parseFloat(r.weth_out), 0).toFixed(6),
+    still_stranded: results.filter((r) => r.resolved === false).length,
+    results,
+  }));
 }
 
 async function main() {
@@ -500,8 +714,9 @@ async function main() {
     case "state": return cmdState(account);
     case "collect": return cmdCollect(wallet, account);
     case "close": return cmdClose(wallet, account);
+    case "sweep": return cmdSweep(wallet, account);
     default:
-      console.error("usage: uni_executor.js address|balance|wrap|quote|deploy|positions|state|collect|close [--flags]");
+      console.error("usage: uni_executor.js address|balance|wrap|quote|deploy|positions|state|collect|close|sweep [--flags]");
       process.exit(2);
   }
 }

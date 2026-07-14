@@ -170,6 +170,31 @@ def journal_close(rec):
         print(f"warn: could not journal close: {e}")
 
 
+def sweep_stranded():
+    """Retry the exit sell for bags a close could not unload.
+
+    Runs every tick, before the position pass. A pool that was dead when we
+    closed can be re-seeded by another LP, and a sell that reverted on a
+    transient just works next time — so the bag is worth re-offering cheaply and
+    often. No-op (one RPC read) when nothing is stranded.
+    """
+    out, err = run_executor(["sweep"], close_auth=True)
+    if err or not out:
+        if err:
+            print(f"monitor: sweep failed: {err}")
+        return
+    if not out.get("swept"):
+        return
+    for r in out.get("results", []):
+        if r.get("resolved") and r.get("weth_out", "0") != "0":
+            print(f"monitor: SWEPT {r.get('symbol')} -> {r['weth_out']} WETH (fee {r.get('fee')})")
+            alert(f"🧹 Robinhood sweep recovered {r['weth_out']} WETH\n"
+                  f"sold stranded {r.get('symbol')} ({r.get('token')})")
+        elif r.get("resolved") is False:
+            print(f"monitor: still stranded {r.get('symbol')} "
+                  f"(attempt {r.get('attempts')}, retry in {r.get('retry_in_s')}s): {r.get('reason')}")
+
+
 def alert(text):
     """Best-effort operator alert via hermes; never fails the tick."""
     target = os.environ.get("DLMM_ALERT_TARGET", "telegram")
@@ -245,6 +270,12 @@ def main():
             sys.exit(1)
         print(f"monitor: positions read failed: {err}")
         sys.exit(1)
+    # Stranded bags outlive the positions that created them, so sweep BEFORE the
+    # no-open-positions early return below — the venue sits flat most of the
+    # time, and a sweep that only ran when something was open would never run.
+    if not REPORT_ONLY and not DRY_RUN:
+        sweep_stranded()
+
     ids = [p["tokenId"] for p in pos.get("positions", [])]
     if not ids:
         if REPORT_ONLY:
@@ -338,6 +369,12 @@ def main():
 
         out, cerr = run_executor(["close", "--id", str(tid)], close_auth=True)
         closed = out and out.get("success")
+        # A close can succeed while its token->WETH sell fails (rugged pool,
+        # sell tax): the liquidity is out and the NFT burned, but the token side
+        # is still a bag in the wallet. The executor journals it for `sweep`;
+        # record it here too so the close journal never claims a clean exit that
+        # actually left value behind.
+        stranded = (out or {}).get("stranded")
         journal_close({
             "ts": int(now),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -345,12 +382,22 @@ def main():
             "pnl_pct": round(pnl, 4) if pnl is not None else None,
             "peak_pct": round(peak, 4), "age_min": round(age_min, 1) if age_min else None,
             "reason": reason, "success": bool(closed), "dry_run": False,
+            "swapped_out": bool((out or {}).get("swapped_out")),
+            "weth_out": (out or {}).get("weth_out"),
+            "stranded": stranded,
         })
         if closed:
             state.pop(str(tid), None)
             live.discard(str(tid))
-            alert(f"🔴 Robinhood LP closed #{tid}\n{reason}\npnl {pnl_str} peak {peak:.1f}%")
-            print(f"monitor: CLOSED #{tid}: {reason}")
+            msg = f"🔴 Robinhood LP closed #{tid}\n{reason}\npnl {pnl_str} peak {peak:.1f}%"
+            if stranded:
+                msg += (f"\n⚠️ {stranded.get('symbol', '?')} NOT sold — {stranded.get('reason', '?')}"
+                        f"\ntoken {stranded.get('token')}\nqueued for sweep")
+            else:
+                msg += f"\nsold for {(out or {}).get('weth_out', '?')} WETH"
+            alert(msg)
+            print(f"monitor: CLOSED #{tid}: {reason}"
+                  + (f" [STRANDED {stranded.get('symbol')}]" if stranded else ""))
         else:
             print(f"monitor: CLOSE FAILED #{tid}: {cerr}")
 
