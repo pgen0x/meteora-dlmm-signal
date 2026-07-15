@@ -163,6 +163,12 @@ type Config struct {
 	// (fail-closed on any read error) since nothing closes positions
 	// automatically yet. Keep this low until Phase 3 monitor exists.
 	RobinhoodMaxOpenPositions int
+	// RobinhoodIndicatorGate runs the supertrend_or_rsi entry-timing check
+	// (internal/robinhood/indicators.go, the Go port of local_indicators.py)
+	// on each deploy pick, skipping candidates whose token is in a confirmed
+	// downtrend. Fail-open on missing candle data. On by default — the same
+	// check already gates Solana entries via dlmm_pipeline.py.
+	RobinhoodIndicatorGate bool
 
 	// DeployCmd switches the daemon to direct-deploy mode: instead of
 	// forwarding each batch to the Hermes agent webhook (LLM pick, observed at
@@ -313,6 +319,7 @@ func Load() Config {
 		RobinhoodRangePct:         getfloat("ROBINHOOD_RANGE_PCT", 10),
 		RobinhoodSlippagePct:      getfloat("ROBINHOOD_SLIPPAGE_PCT", 5),
 		RobinhoodMaxOpenPositions: getint("ROBINHOOD_MAX_OPEN_POSITIONS", 1),
+		RobinhoodIndicatorGate:    getbool("ROBINHOOD_INDICATOR_GATE", true),
 		RobinhoodSeenTTL:          getdur("ROBINHOOD_SEEN_TTL", 6*time.Hour),
 		RobinhoodMinHolders:       getint("ROBINHOOD_MIN_HOLDERS", 50),
 		DeployCmd:                 getenv("DEPLOY_CMD", ""),

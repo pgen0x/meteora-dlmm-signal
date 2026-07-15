@@ -27,6 +27,8 @@ import sys
 import time
 import urllib.request
 
+from local_indicators import check_local_indicators
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
 # (protocol, executor path) pairs, monitored in order. v4 rides the same tick
@@ -64,6 +66,22 @@ DOWNTREND_1H_PCT = -5.0            # sustained-downtrend exit (both must trip)
 DOWNTREND_PNL_PCT = -5.0
 MAX_OOR_MINUTES = 30.0             # out-of-range this long -> close (fee-dead)
 MIN_AGE_MIN_BEFORE_SL = 5.0        # grace so a fresh mint's settling isn't an SL
+
+# Pre-exit indicator confirmation — the Solana monitor's supertrend timing
+# check (dlmm_monitor.py step 7), applied to this venue's non-emergency exits:
+# a trailing/fast-out/downtrend close is postponed while the indicators still
+# read bullish (a dip, not a dump), then forced once the block ages past the
+# cap. Emergency SL / hard SL / TP / OOR-timeout closes are never postponed.
+INDICATORS_ENABLED = os.environ.get("UNI_INDICATORS_ENABLED", "true").lower() != "false"
+INDICATORS_PRESET = os.environ.get("UNI_INDICATORS_PRESET", "supertrend_or_rsi")
+MAX_INDICATOR_BLOCK_MINUTES = 60.0
+
+
+def exit_confirmable(reason):
+    """Only momentum-shaped exits wait for indicator confirmation; hard-risk
+    rules (SL, TP, fee-dead OOR) close unconditionally, mirroring the Solana
+    monitor's is_emergency carve-out."""
+    return reason.startswith(("trailing exit", "fast-out", "downtrend"))
 
 
 def run_executor(executor, args, close_auth=False):
@@ -439,6 +457,32 @@ def main():
 
         m5, h1 = fetch_momentum(pool) if pool else (None, None)
         reason = decide(pnl, peak, in_range, age_min, oor_min, m5, h1)
+
+        # Pre-exit indicator confirmation (non-emergency exits only): postpone
+        # the close while supertrend/RSI still read bullish — a dip inside an
+        # uptrend, not a dump — but force it once the block outlives the cap.
+        if reason and INDICATORS_ENABLED and exit_confirmable(reason) and pool:
+            blocked_since = ps.get("ind_block_since")
+            blocked_min = (now - blocked_since) / 60.0 if blocked_since else 0.0
+            if blocked_min >= MAX_INDICATOR_BLOCK_MINUTES:
+                print(f"monitor: {proto} #{tid} indicator exit block timed out after {blocked_min:.0f}m — forcing close")
+                ps.pop("ind_block_since", None)
+            else:
+                confirmed = check_local_indicators(pool, s.get("token"), "exit",
+                                                   INDICATORS_PRESET, "24h", network="robinhood")
+                if confirmed is False:
+                    print(f"monitor: {proto} #{tid} exit postponed ({INDICATORS_PRESET} rejected): {reason}")
+                    if not blocked_since:
+                        ps["ind_block_since"] = now
+                    reason = None
+                else:
+                    if confirmed is None:
+                        print(f"monitor: {proto} #{tid} indicator data unavailable — proceeding with exit (fail-open)")
+                    ps.pop("ind_block_since", None)
+        elif not reason:
+            # Rule no longer fires — the dip resolved; a stale block must not
+            # shortcut a future, unrelated exit straight to "timed out".
+            ps.pop("ind_block_since", None)
 
         pnl_str = f"{pnl:.1f}%" if pnl is not None else "n/a"
         print(f"monitor: {proto} #{tid} pnl={pnl_str} peak={peak:.1f}% "

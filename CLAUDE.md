@@ -70,7 +70,11 @@ one pass per enabled mode per `POLL_INTERVAL`.
     one busy hour fake a 24× daily rate.
 
   Both modes share `Screen` and every safety gate (GMGN OpenAPI
-  `chain=robinhood` security + holder quality, Blockscout holders). Phase 1 is
+  `chain=robinhood` security + holder quality, Blockscout holders). The deploy
+  pick also passes a supertrend/RSI entry-timing gate (`indicators.go`, the Go
+  port of the skill's `local_indicators.py` — keep them in sync; fail-open,
+  `ROBINHOOD_INDICATOR_GATE`), and `uni_monitor.py` confirms non-emergency
+  exits through the same indicators before closing. Phase 1 is
   **observe-only** (`ROBINHOOD_ENABLED`, batches journal to the log;
   `ROBINHOOD_WEBHOOK` forwards them) and NEVER routes to `DEPLOY_CMD` — the
   pipeline is Solana-only. One deliberate divergence from the fail-open rule:

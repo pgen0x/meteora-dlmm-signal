@@ -7,12 +7,18 @@ import re
 import subprocess
 import time
 
-def get_cached_indicator(pool_address, preset, timeframe, side):
+def _cache_key(network, pool_address, preset, timeframe, side):
+    # Solana keeps its historical prefix so existing cache entries stay valid;
+    # other networks (e.g. "robinhood") get their own namespace.
+    prefix = "sol:dlmm:indicators" if network == "solana" else f"{network}:indicators"
+    return f"{prefix}:{pool_address}:{preset}:{timeframe}:{side}"
+
+def get_cached_indicator(pool_address, preset, timeframe, side, network="solana"):
     """
     Checks Redis for a cached indicator calculation result.
     Returns True, False, or None (if no cache exists).
     """
-    key = f"sol:dlmm:indicators:{pool_address}:{preset}:{timeframe}:{side}"
+    key = _cache_key(network, pool_address, preset, timeframe, side)
     try:
         res = subprocess.run(f"redis-cli get \"{key}\"", shell=True, capture_output=True, text=True, timeout=5)
         out = res.stdout.strip()
@@ -26,21 +32,22 @@ def get_cached_indicator(pool_address, preset, timeframe, side):
         print(f"Warning: Failed to read indicator cache: {e}")
     return None
 
-def set_cached_indicator(pool_address, preset, timeframe, side, confirmed, ttl=270):
+def set_cached_indicator(pool_address, preset, timeframe, side, confirmed, ttl=270, network="solana"):
     """
     Saves the calculated indicator result to Redis with a TTL.
     """
-    key = f"sol:dlmm:indicators:{pool_address}:{preset}:{timeframe}:{side}"
+    key = _cache_key(network, pool_address, preset, timeframe, side)
     confirmed_str = "true" if confirmed else "false"
     try:
         subprocess.run(f"redis-cli setex \"{key}\" {ttl} {confirmed_str}", shell=True, capture_output=True, timeout=5)
     except Exception as e:
         print(f"Warning: Failed to set indicator cache: {e}")
 
-def fetch_ohlcv_candles(pool_address, timeframe, token_address=None):
+def fetch_ohlcv_candles(pool_address, timeframe, token_address=None, network="solana"):
     """
     Fetches raw OHLCV candles from GeckoTerminal API.
     Supports retries with backoff, and falls back to token address endpoint if pool address fails.
+    network: GeckoTerminal network slug ("solana", "robinhood", ...).
     """
     # Map timeframe to minutes / aggregate candle size
     tf_path = "minute"
@@ -57,10 +64,11 @@ def fetch_ohlcv_candles(pool_address, timeframe, token_address=None):
         
     urls = []
     # 1. Primary path: pool address
-    urls.append((f"https://api.geckoterminal.com/api/v2/networks/solana/pools/{pool_address}/ohlcv/{tf_path}?aggregate={aggregate}", "pool"))
-    # 2. Fallback path: token address (if provided)
+    urls.append((f"https://api.geckoterminal.com/api/v2/networks/{network}/pools/{pool_address}/ohlcv/{tf_path}?aggregate={aggregate}", "pool"))
+    # 2. Fallback path: token address (if provided; never the quote asset —
+    # wrapped SOL on Solana, since its token-level candles are not the pool's)
     if token_address and token_address != "So11111111111111111111111111111111111111112":
-        urls.append((f"https://api.geckoterminal.com/api/v2/networks/solana/tokens/{token_address}/ohlcv/{tf_path}?aggregate={aggregate}", "token"))
+        urls.append((f"https://api.geckoterminal.com/api/v2/networks/{network}/tokens/{token_address}/ohlcv/{tf_path}?aggregate={aggregate}", "token"))
         
     for url, path_type in urls:
         retries = 3
@@ -298,24 +306,26 @@ def calculate_fibonacci(highs, lows):
         "0.786": max_high - 0.786 * diff
     }
 
-def check_local_indicators(pool_address, base_mint, side, preset, timeframe):
+def check_local_indicators(pool_address, base_mint, side, preset, timeframe, network="solana"):
     """
     Executes timing checks using indicators calculated locally from GeckoTerminal candles.
     Checks Redis cache first. Falls back gracefully on failure.
+    network: GeckoTerminal network slug ("solana", "robinhood", ...).
     """
+    label = (base_mint or pool_address)[:8]
     # Exit checks never use cache — trailing TP fires every 20s and needs fresh data.
     # A stale cached REJECTED blocks trailing exits during reversals for up to 4.5min.
     # Entry checks cache for 270s (deploy happens once; spam prevention is worth it).
     if side == "entry":
-        cached_val = get_cached_indicator(pool_address, preset, timeframe, side)
+        cached_val = get_cached_indicator(pool_address, preset, timeframe, side, network=network)
         if cached_val is not None:
-            print(f"📊 Indicator timing check for {base_mint[:8]} ({preset}) retrieved from Redis cache: {'🟢 CONFIRMED' if cached_val else '🔴 REJECTED'}")
+            print(f"📊 Indicator timing check for {label} ({preset}) retrieved from Redis cache: {'🟢 CONFIRMED' if cached_val else '🔴 REJECTED'}")
             return cached_val
 
     print(f"📊 Running local indicators check for pool {pool_address[:8]} ({preset})")
-    
+
     # 2. Fetch Candles
-    candles = fetch_ohlcv_candles(pool_address, timeframe, token_address=base_mint)
+    candles = fetch_ohlcv_candles(pool_address, timeframe, token_address=base_mint, network=network)
     if not candles:
         print("Warning: GeckoTerminal returned empty candles — data unavailable, indicator skipped (fail-open: None).")
         return None
@@ -415,11 +425,11 @@ def check_local_indicators(pool_address, base_mint, side, preset, timeframe):
         else:
             confirmed = crossed_down(fib618) or crossed_down(fib50) or crossed_down(fib786)
             
-    print(f"📊 Local Timing Check for {base_mint[:8]} ({preset}): {'🟢 CONFIRMED' if confirmed else '🔴 REJECTED'} (Close: {close:.8f}, RSI: {rsi:.1f}, ST: {supertrend_dir})")
-    
+    print(f"📊 Local Timing Check for {label} ({preset}): {'🟢 CONFIRMED' if confirmed else '🔴 REJECTED'} (Close: {close:.8f}, RSI: {rsi:.1f}, ST: {supertrend_dir})")
+
     # 3. Write to Cache (entry only — exit checks must stay uncached)
     if side == "entry":
-        set_cached_indicator(pool_address, preset, timeframe, side, confirmed)
+        set_cached_indicator(pool_address, preset, timeframe, side, confirmed, network=network)
     
     return confirmed
 

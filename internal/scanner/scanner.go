@@ -158,23 +158,20 @@ func rhBatchSummary(batch []*robinhood.Candidate) string {
 // pick is a plain argmax. Fails closed on any OpenPositions read error: with
 // no monitor yet to close stale positions, an unknown count must never be
 // treated as "room to deploy".
-// pickBest returns the highest-scoring candidate, preferring non-copycats: it
-// takes the argmax over clean candidates if any exist, otherwise the argmax
-// over the whole (all-copycat) batch. Batch is non-empty by caller contract.
-func pickBest(batch []*robinhood.Candidate) *robinhood.Candidate {
-	var best, bestClean *robinhood.Candidate
-	for _, c := range batch {
-		if best == nil || c.Score > best.Score {
-			best = c
+// pickOrder returns candidates in pick preference: clean candidates by score
+// descending, then copycats by score descending — the ranking pickBest used
+// to argmax over, kept as a full order so the entry-timing gate can fall
+// through to the next-best candidate instead of forfeiting the cycle
+// (mirroring dlmm_pipeline.py's batch pick loop).
+func pickOrder(batch []*robinhood.Candidate) []*robinhood.Candidate {
+	out := append([]*robinhood.Candidate(nil), batch...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].IsCopycat != out[j].IsCopycat {
+			return !out[i].IsCopycat
 		}
-		if !c.IsCopycat && (bestClean == nil || c.Score > bestClean.Score) {
-			bestClean = c
-		}
-	}
-	if bestClean != nil {
-		return bestClean
-	}
-	return best
+		return out[i].Score > out[j].Score
+	})
+	return out
 }
 
 func (s *Scanner) robinhoodDeploy(ctx context.Context, mode string, batch []*robinhood.Candidate) {
@@ -195,11 +192,33 @@ func (s *Scanner) robinhoodDeploy(ctx context.Context, mode string, batch []*rob
 		return
 	}
 
-	// Argmax(Score), but demote copycats: a same-symbol collision means we can't
-	// tell the real token from the imposter, so LPing one is a coin flip on
-	// holding the loser. Prefer any clean candidate; only pick a copycat when the
-	// whole batch is contested (then take the strongest, and say so).
-	best := pickBest(eligible)
+	// Walk candidates in score order (copycats demoted: a same-symbol collision
+	// means we can't tell the real token from the imposter, so LPing one is a
+	// coin flip on holding the loser). The supertrend_or_rsi entry-timing gate
+	// vetoes candidates whose token is in a confirmed downtrend — the FOX
+	// lesson: rh-mature's fee/TVL selection loves pools whose yield is paid by
+	// a collapsing price, and the raw h1 screen gate (-15%) sits looser than
+	// the monitor's downtrend exit (-5%), so an unchecked pick can be one tick
+	// from its own close. Data-unavailable fails open, per the gate convention.
+	var best *robinhood.Candidate
+	for _, c := range pickOrder(eligible) {
+		if s.cfg.RobinhoodIndicatorGate {
+			if confirmed, detail, ok := robinhood.EntryTimingConfirm(c.Pool); ok && !confirmed {
+				log.Printf("scanner[%s]: %s (%s) rejected on entry timing: %s",
+					mode, c.BaseSymbol, c.Pool[:10], detail)
+				continue
+			} else if !ok {
+				log.Printf("scanner[%s]: %s (%s) entry timing unavailable (%s) — proceeding on other gates (fail-open)",
+					mode, c.BaseSymbol, c.Pool[:10], detail)
+			}
+		}
+		best = c
+		break
+	}
+	if best == nil {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED — entry timing rejected all %d candidate(s)", mode, len(eligible))
+		return
+	}
 	if best.IsCopycat {
 		log.Printf("scanner[%s]: DEPLOY PICK is a copycat (%s, %d share ticker %q) — no clean candidate this batch",
 			mode, best.Pool[:10], best.CopycatCount, best.BaseSymbol)
