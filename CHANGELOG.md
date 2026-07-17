@@ -5,6 +5,38 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.13.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.12.0...v1.13.0) (2026-07-17)
+
+
+### Features
+
+* auto-unwrap WETH to keep a native-ETH gas reserve ([255d20d](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/255d20d3cc7516317d9298ecc07dc07f80b564a7))
+* automatic direct-deploy dispatch for Robinhood Chain (ROBINHOOD_DEPLOY_ENABLED) ([f1504bf](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/f1504bfba4bb6c61a6e7def82776041ca9110bf1))
+* copycat guard for Robinhood venue — intra-batch same-symbol collision ([e0ce2f0](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/e0ce2f01f46ca86fe6df55e742b9c41b92ebc862))
+* dynamic position sizing for the Robinhood venue (port of compute_deploy_amount) ([11ab447](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/11ab447c8952135545518894eb3dd95481f279f3))
+* monitor walks both executors so v4 positions get exits ([14a8af7](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/14a8af70dbb18e6db0b1dd93ac879f29a4a321bf))
+* pad gas estimates 30% and label v3 positions by pair ([bfde144](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/bfde144eb18cc3faddd79da4b2706b49cebd54be))
+* port meridian screening + exit upgrades ([8aaa241](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/8aaa241e155a8af42f680ba983de01bf9e46c3d9))
+* rh-mature mode — established fee-printers via Uniswap's own gateway ([2853812](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/2853812c60223afc8f4653a51f29d04b2389204e))
+* Robinhood Chain venue — GeckoTerminal discovery, screening, GMGN/Blockscout safety gates (observe-only) ([fe9f8f9](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/fe9f8f98ea105b7b26371265940550efe806dec7))
+* screening recalibration from the 14d close journal ([3208589](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/3208589629afc93317682d5b5418acc6e5be3c00))
+* supertrend/RSI timing gates for the Robinhood venue ([f305db9](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/f305db97e5648805b8fd67108b494bb307634ba1))
+* uni_executor.js — Uniswap v3 executor for Robinhood Chain (viem) ([21372c2](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/21372c29b1863b6d68a700c5175429760af414b1))
+* uni_monitor.py --report-only + rh_dlmm_position_monitor Hermes cron ([bbcd7e8](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/bbcd7e8b7ab03747ab93a1b26efd3d554a8d3f21))
+* uni_monitor.py — Robinhood Chain position monitor with Solana exit rulebook ([77cdc67](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/77cdc671faa329174627588c07685998df252d05))
+* Uniswap v4 + USDG — discovery, screening, and live execution (Phases 6+7) ([4057171](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/40571716980ba3133aebc9560427ef601a32d4c0))
+
+
+### Bug Fixes
+
+* a failed exit sell no longer strands the token side of a close ([1b3e28b](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/1b3e28b2e6639f9b26f875b53193d9599345fb3b))
+* GeckoTerminal keyless tier throttles ~4 req/min, not 30 — shrink discovery budget ([44a2a72](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/44a2a727cefef844c6102454c3023e2c8d29c087))
+* MinReserveUSD 8000-&gt;2500, was killing 73% of pools before any real gate ran ([3f003b6](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/3f003b62fd98d7584f4764f1575d93cdfda062e1))
+* monitor loops froze DRY_RUN at launch; GeckoTerminal 403'd the Python UA ([61f5423](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/61f5423c55fa77dac0a628456b5fd628dd26ec3f))
+* never journal tokenId="unknown" — orphan disables monitor SL/TP ([5fe73e8](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/5fe73e826c09532cd74f7d2625cbf03384ceb0f5))
+* price the position at what the mint actually took, not what we offered ([09e1a8e](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/09e1a8ed54bb87ea4002d7349857c6a539cd00b9))
+* strip executor JSON tail from the Robinhood deploy report line ([9ccef1a](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/9ccef1a2e41ec284084a35daebb83bae37e71b64))
+
 ## [1.12.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.11.2...v1.12.0) (2026-07-13)
 
 
