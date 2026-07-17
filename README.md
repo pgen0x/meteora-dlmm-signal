@@ -1,6 +1,6 @@
 # Meteora DLMM Trading Bot — Solana Liquidity Pool Signal Daemon for AI Agents
 
-[![Version](https://img.shields.io/static/v1?label=version&message=1.12.0&color=informational)](CHANGELOG.md) <!-- x-release-please-version -->
+[![Version](https://img.shields.io/static/v1?label=version&message=1.13.0&color=informational)](CHANGELOG.md) <!-- x-release-please-version -->
 [![Go Version](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-beta-yellow)](#project-status)
