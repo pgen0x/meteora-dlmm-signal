@@ -28,11 +28,13 @@ type AuditInfo struct {
 	BotHoldersPct *float64
 	TopHoldersPct *float64
 	GlobalFeesSOL *float64
+	Dev           string // deployer wallet — feeds the pipeline's dev blocklist
 }
 
 // jupAsset mirrors the fields we read from one /assets/search result.
 type jupAsset struct {
 	ID    string   `json:"id"`
+	Dev   string   `json:"dev"`
 	Fees  *float64 `json:"fees"`
 	Audit *struct {
 		TopHoldersPercentage *float64 `json:"topHoldersPercentage"`
@@ -78,7 +80,7 @@ func FetchAudit(mint string) (*AuditInfo, bool) {
 		return nil, false
 	}
 
-	info := &AuditInfo{GlobalFeesSOL: asset.Fees}
+	info := &AuditInfo{GlobalFeesSOL: asset.Fees, Dev: asset.Dev}
 	if asset.Audit != nil {
 		info.BotHoldersPct = asset.Audit.BotHoldersPercentage
 		info.TopHoldersPct = asset.Audit.TopHoldersPercentage
@@ -106,4 +108,5 @@ func (c *Candidate) ApplyAudit(a *AuditInfo) {
 	}
 	c.BotHoldersPct = a.BotHoldersPct
 	c.GlobalFeesSOL = a.GlobalFeesSOL
+	c.Dev = a.Dev
 }

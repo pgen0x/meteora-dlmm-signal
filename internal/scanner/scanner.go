@@ -12,6 +12,7 @@ import (
 	"github.com/meteora-dlmm-trading-bot/internal/config"
 	"github.com/meteora-dlmm-trading-bot/internal/deploy"
 	"github.com/meteora-dlmm-trading-bot/internal/meteora"
+	"github.com/meteora-dlmm-trading-bot/internal/robinhood"
 	"github.com/meteora-dlmm-trading-bot/internal/store"
 	"github.com/meteora-dlmm-trading-bot/internal/webhook"
 )
@@ -61,19 +62,23 @@ func rejectSummary(rejects map[string]int) string {
 // Scanner polls the Meteora discovery API for each enabled mode, screens pools,
 // dedups, and forwards newly-qualifying pools to the Hermes webhook.
 type Scanner struct {
-	cfg  config.Config
-	seen *store.Seen
-	fwd  *webhook.Forwarder
-	dep  *deploy.Runner
+	cfg     config.Config
+	seen    *store.Seen
+	fwd     *webhook.Forwarder
+	dep     *deploy.Runner
+	rhDep   *robinhood.Runner // uni_executor.js (v3)
+	rhDepV4 *robinhood.Runner // uni_v4_executor.js; disabled when unset
 }
 
 // New wires a Scanner from config.
 func New(cfg config.Config) *Scanner {
 	return &Scanner{
-		cfg:  cfg,
-		seen: store.New(cfg.RedisAddr, cfg.RedisSeenKey, cfg.SeenTTL),
-		fwd:  webhook.New(cfg.WebhookURL, cfg.WebhookSecret),
-		dep:  deploy.New(cfg.DeployCmd, cfg.ReportCmd, cfg.DeployTimeout),
+		cfg:     cfg,
+		seen:    store.New(cfg.RedisAddr, cfg.RedisSeenKey, cfg.SeenTTL),
+		fwd:     webhook.New(cfg.WebhookURL, cfg.WebhookSecret),
+		dep:     deploy.New(cfg.DeployCmd, cfg.ReportCmd, cfg.DeployTimeout),
+		rhDep:   robinhood.New(cfg.RobinhoodExecutorCmd, cfg.RobinhoodDeployTimeout),
+		rhDepV4: robinhood.New(cfg.RobinhoodV4ExecutorCmd, cfg.RobinhoodDeployTimeout),
 	}
 }
 
@@ -94,8 +99,9 @@ func (s *Scanner) modes() []meteora.ModeParams {
 
 // Run blocks, polling on PollInterval until ctx is cancelled.
 func (s *Scanner) Run(ctx context.Context) {
-	log.Printf("scanner: started (interval=%v, casual=%v, multiday=%v, turnover=%v, momentum=%v)",
-		s.cfg.PollInterval, s.cfg.EnableCasual, s.cfg.EnableMultiday, s.cfg.EnableTurnover, s.cfg.EnableMomentumGate)
+	log.Printf("scanner: started (interval=%v, casual=%v, multiday=%v, turnover=%v, momentum=%v, robinhood=%v, rh-mature=%v)",
+		s.cfg.PollInterval, s.cfg.EnableCasual, s.cfg.EnableMultiday, s.cfg.EnableTurnover, s.cfg.EnableMomentumGate,
+		s.cfg.EnableRobinhood, s.cfg.EnableRobinhoodMature)
 
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
@@ -116,6 +122,308 @@ func (s *Scanner) pollAll(ctx context.Context) {
 	for _, mp := range s.modes() {
 		s.pollMode(ctx, mp)
 	}
+	if s.cfg.EnableRobinhood {
+		// Each mode brings its own discovery source: the two theses sit on
+		// opposite sides of a 24h age line and NO single feed spans both.
+		// GeckoTerminal's new_pools is a launch feed (a pool scrolls off it in
+		// minutes); Uniswap's gateway is a TVL leaderboard that indexes nothing
+		// younger than a day. See mature.go.
+		s.pollRobinhood(ctx, robinhood.Fresh, func(time.Time) ([]robinhood.Pool, error) {
+			return robinhood.FetchNewPools(s.cfg.RobinhoodDiscoverURL)
+		})
+	}
+	if s.cfg.EnableRobinhoodMature {
+		s.pollRobinhood(ctx, robinhood.Mature, func(now time.Time) ([]robinhood.Pool, error) {
+			return robinhood.FetchMaturePools(robinhood.Mature, now)
+		})
+	}
+}
+
+// rhBatchSummary renders a compact "SYM(score)" list for one log line.
+func rhBatchSummary(batch []*robinhood.Candidate) string {
+	parts := make([]string, 0, len(batch))
+	for _, c := range batch {
+		parts = append(parts, fmt.Sprintf("%s(%.0f)", c.BaseSymbol, c.Score))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// pollRobinhood runs one discovery cycle for the Robinhood Chain venue
+// (Phase 1, signal-only — see docs/ROBINHOOD_CHAIN_PLAN.md). Batches go to
+// the webhook sink ONLY: the direct-deploy pipeline speaks Solana and must
+// never receive an EVM candidate until the Phase 2 executor lands.
+// robinhoodDeploy picks the batch's single highest-scoring candidate and
+// mints it via uni_executor.js. There is no re-ranking pipeline like
+// dlmm_pipeline.py here — screen.go already scores every candidate, so the
+// pick is a plain argmax. Fails closed on any OpenPositions read error: with
+// no monitor yet to close stale positions, an unknown count must never be
+// treated as "room to deploy".
+// pickOrder returns candidates in pick preference: clean candidates by score
+// descending, then copycats by score descending — the ranking pickBest used
+// to argmax over, kept as a full order so the entry-timing gate can fall
+// through to the next-best candidate instead of forfeiting the cycle
+// (mirroring dlmm_pipeline.py's batch pick loop).
+func pickOrder(batch []*robinhood.Candidate) []*robinhood.Candidate {
+	out := append([]*robinhood.Candidate(nil), batch...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].IsCopycat != out[j].IsCopycat {
+			return !out[i].IsCopycat
+		}
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func (s *Scanner) robinhoodDeploy(ctx context.Context, mode string, batch []*robinhood.Candidate) {
+	// Keep only candidates an enabled executor can actually mint: v3 pools
+	// need uni_executor.js, v4 poolIds need uni_v4_executor.js (Phase 7).
+	// With no v4 executor configured, v4 candidates stay observe-only —
+	// exactly the pre-Phase-7 behavior.
+	eligible := batch[:0:0]
+	for _, c := range batch {
+		if c.Protocol == "v4" && s.rhDepV4.Enabled() || c.Protocol != "v4" && s.rhDep.Enabled() {
+			eligible = append(eligible, c)
+		}
+	}
+	if len(eligible) < len(batch) {
+		log.Printf("scanner[%s]: %d candidate(s) excluded from deploy (no executor for their protocol)", mode, len(batch)-len(eligible))
+	}
+	if len(eligible) == 0 {
+		return
+	}
+
+	// Walk candidates in score order (copycats demoted: a same-symbol collision
+	// means we can't tell the real token from the imposter, so LPing one is a
+	// coin flip on holding the loser). The supertrend_or_rsi entry-timing gate
+	// vetoes candidates whose token is in a confirmed downtrend — the FOX
+	// lesson: rh-mature's fee/TVL selection loves pools whose yield is paid by
+	// a collapsing price, and the raw h1 screen gate (-15%) sits looser than
+	// the monitor's downtrend exit (-5%), so an unchecked pick can be one tick
+	// from its own close. Data-unavailable fails open, per the gate convention.
+	var best *robinhood.Candidate
+	for _, c := range pickOrder(eligible) {
+		if s.cfg.RobinhoodIndicatorGate {
+			if confirmed, detail, ok := robinhood.EntryTimingConfirm(c.Pool); ok && !confirmed {
+				log.Printf("scanner[%s]: %s (%s) rejected on entry timing: %s",
+					mode, c.BaseSymbol, c.Pool[:10], detail)
+				continue
+			} else if !ok {
+				log.Printf("scanner[%s]: %s (%s) entry timing unavailable (%s) — proceeding on other gates (fail-open)",
+					mode, c.BaseSymbol, c.Pool[:10], detail)
+			}
+		}
+		best = c
+		break
+	}
+	if best == nil {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED — entry timing rejected all %d candidate(s)", mode, len(eligible))
+		return
+	}
+	if best.IsCopycat {
+		log.Printf("scanner[%s]: DEPLOY PICK is a copycat (%s, %d share ticker %q) — no clean candidate this batch",
+			mode, best.Pool[:10], best.CopycatCount, best.BaseSymbol)
+	}
+	runner := s.rhDep
+	if best.Protocol == "v4" {
+		runner = s.rhDepV4
+	}
+
+	// The position cap spans BOTH executors: v3 NPM positions and v4 posm
+	// positions draw on the same wallet, so the brake is per-wallet, not
+	// per-protocol. Fail closed if ANY enabled executor cannot be counted.
+	open := 0
+	for _, r := range []*robinhood.Runner{s.rhDep, s.rhDepV4} {
+		if !r.Enabled() {
+			continue
+		}
+		n, err := r.OpenPositions(ctx)
+		if err != nil {
+			log.Printf("scanner[%s]: DEPLOY SKIPPED (position count unknown, failing closed): %v", mode, err)
+			return
+		}
+		open += n
+	}
+	if open >= s.cfg.RobinhoodMaxOpenPositions {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED %s (%s): at position cap %d/%d",
+			mode, best.BaseSymbol, best.Pool[:10], open, s.cfg.RobinhoodMaxOpenPositions)
+		return
+	}
+
+	// Size from the LIVE wallet, not a fixed constant — same rationale as the
+	// Solana pipeline's compute_deploy_amount. Fail closed on a balance we
+	// cannot read: guessing a size is how you overspend or mint dust.
+	bal, err := runner.Balance(ctx)
+	if err != nil {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED (balance unknown, failing closed): %v", mode, err)
+		return
+	}
+	// Gas is native ETH here, not the assets we LP with — a WETH/USDG-rich
+	// wallet can still be too broke to pay for the mint.
+	if bal.ETH < s.cfg.RobinhoodMinGasEth {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED %s (%s): gas %.6f ETH < %.6f floor — fund the wallet",
+			mode, best.BaseSymbol, best.Pool[:10], bal.ETH, s.cfg.RobinhoodMinGasEth)
+		return
+	}
+	// Size in the candidate's quote asset. USDG pools size off the USDG
+	// balance with the dollar-unit params; WETH and native-ETH pools size off
+	// WETH (the executor unwraps on demand for native settles). The quote
+	// address is only forwarded to the v4 executor — v3 is WETH-only.
+	sizeCfg, sizeBal, unit, quote := s.cfg.RobinhoodSize, bal.WETH, "WETH", ""
+	if best.Protocol == "v4" {
+		quote = best.QuoteAddress
+		if strings.EqualFold(quote, robinhood.USDG) {
+			sizeCfg, sizeBal, unit = s.cfg.RobinhoodSizeUSDG, bal.USDG, "USDG"
+		}
+	}
+	amount := robinhood.ComputeDeployAmount(sizeBal, sizeCfg)
+	if amount <= 0 {
+		log.Printf("scanner[%s]: DEPLOY SKIPPED %s (%s): %.5f %s balance cannot fund a %.5f floor position (reserve %.5f)",
+			mode, best.BaseSymbol, best.Pool[:10], sizeBal, unit, sizeCfg.Floor, sizeCfg.Reserve)
+		return
+	}
+
+	log.Printf("scanner[%s]: DEPLOY PICK %s (%s, %s) score=%.0f amount=%.5f %s (%.0f%% of %.5f bal, reserve %.5f) strategy=%s",
+		mode, best.BaseSymbol, best.Pool[:10], best.Protocol, best.Score, amount, unit,
+		sizeCfg.Pct*100, sizeBal, sizeCfg.Reserve, s.cfg.RobinhoodDeployStrategy)
+
+	out, err := runner.Deploy(ctx, best.Pool, amount, s.cfg.RobinhoodRangePct, s.cfg.RobinhoodSlippagePct, s.cfg.RobinhoodDeployStrategy, quote)
+	if err != nil {
+		log.Printf("scanner[%s]: DEPLOY FAILED %s (%s): %v\n%s", mode, best.BaseSymbol, best.Pool[:10], err, out)
+		return
+	}
+	deployed := robinhood.Deployed(out)
+	summary := robinhood.Summarize(out)
+	log.Printf("scanner[%s]: DEPLOY done (deployed=%v) %s\n%s", mode, deployed, best.BaseSymbol, summary)
+	if deployed {
+		if rerr := s.dep.Report(ctx, summary); rerr != nil {
+			log.Printf("scanner[%s]: report delivery failed: %v", mode, rerr)
+		}
+	}
+}
+
+// rhFetcher is a mode's discovery source. It takes the cycle's clock so the
+// mature source can age-filter before spending its enrichment budget, keeping
+// the single clock read at this edge (see the no-hidden-clock-reads rule).
+type rhFetcher func(now time.Time) ([]robinhood.Pool, error)
+
+func (s *Scanner) pollRobinhood(ctx context.Context, mp robinhood.ModeParams, fetch rhFetcher) {
+	now := time.Now()
+	pools, err := fetch(now)
+	if err != nil {
+		log.Printf("scanner[%s]: fetch error: %v", mp.Mode, err)
+		return
+	}
+
+	var screened, deduped, holderRejected, secRejected, hqRejected, gmgnEnriched int
+	rejects := map[string]int{}
+
+	var batch []*robinhood.Candidate
+	var batchKeys []string
+	for _, p := range pools {
+		cand, reason := robinhood.Screen(p, mp, now)
+		if reason != "" {
+			rejects[reasonKey(reason)]++
+			continue
+		}
+		screened++
+
+		// Dedup BEFORE the safety fetches — same budget discipline as the
+		// Solana venue's momentum/audit ordering. The rh: prefix keeps venue
+		// keys disjoint from Solana pool keys in the shared store.
+		poolKey := "rh:" + mp.Mode + ":" + cand.Pool
+		fresh, err := s.seen.MarkIfNewTTL(ctx, poolKey, s.cfg.RobinhoodSeenTTL)
+		if err != nil {
+			log.Printf("scanner[%s]: seen store error: %v", mp.Mode, err)
+			continue
+		}
+		if !fresh {
+			deduped++
+			continue
+		}
+
+		// Blockscout holder floor (fail-open on fetch failure).
+		if n, ok := robinhood.FetchHolders(cand.BaseAddress); ok {
+			if s.cfg.RobinhoodMinHolders > 0 && n < s.cfg.RobinhoodMinHolders {
+				holderRejected++
+				log.Printf("scanner[%s]: %s (%s) rejected: holders %d < %d",
+					mp.Mode, cand.BaseSymbol, cand.Pool[:10], n, s.cfg.RobinhoodMinHolders)
+				continue
+			}
+			cand.Holders = &n
+		}
+
+		// GMGN contract-security gate. DIVERGENCE from the fail-open rule,
+		// on purpose: a POSITIVE honeypot/blacklist/sell-tax detection hard
+		// rejects (EVM's #1 rug vector); unknown (-1/null) still passes.
+		if s.cfg.GmgnAPIKey != "" {
+			if sec, ok := robinhood.FetchSecurity(s.cfg.GmgnAPIKey, cand.BaseAddress, now.Unix()); ok {
+				if r := robinhood.SecurityReject(sec); r != "" {
+					secRejected++
+					log.Printf("scanner[%s]: %s (%s) rejected on security: %s",
+						mp.Mode, cand.BaseSymbol, cand.Pool[:10], r)
+					continue
+				}
+				cand.ApplySecurity(sec)
+			}
+
+			// GMGN holder-quality gate — same rat/bundler caps as Solana.
+			if ti, ok := robinhood.FetchTokenInfo(s.cfg.GmgnAPIKey, cand.BaseAddress, now.Unix()); ok {
+				if r := robinhood.HolderQualityReject(ti, s.cfg.GmgnMaxRatPct, s.cfg.GmgnMaxBundlerPct); r != "" {
+					hqRejected++
+					log.Printf("scanner[%s]: %s (%s) rejected on gmgn: %s",
+						mp.Mode, cand.BaseSymbol, cand.Pool[:10], r)
+					continue
+				}
+				cand.ApplyTokenInfo(ti)
+				gmgnEnriched++
+			}
+		}
+
+		batch = append(batch, cand)
+		batchKeys = append(batchKeys, poolKey)
+	}
+
+	// Copycat guard: flag same-symbol collisions within this batch (advisory —
+	// never rejects; the picker demotes flagged candidates). Cheap, no I/O.
+	if flagged := robinhood.EnrichCopycat(batch); flagged > 0 {
+		log.Printf("scanner[%s]: copycat guard flagged %d candidate(s)", mp.Mode, flagged)
+	}
+
+	sent := 0
+	if len(batch) > 0 {
+		if s.cfg.RobinhoodDeployEnabled && (s.rhDep.Enabled() || s.rhDepV4.Enabled()) &&
+			s.cfg.RobinhoodDeployModes[strings.TrimPrefix(mp.Mode, "rh-")] {
+			// Direct deploy (Phase 2): bypasses OBSERVE/webhook entirely,
+			// mirroring how Solana's DEPLOY_CMD bypasses its webhook. Gated
+			// per-mode by ROBINHOOD_DEPLOY_MODES — a mode outside the set
+			// (e.g. fresh while only mature trades) still journals below.
+			s.robinhoodDeploy(ctx, mp.Mode, batch)
+			sent = len(batch)
+		} else if !s.cfg.RobinhoodWebhook {
+			// Observe-only (Phase 1 default): journal the full payload so the
+			// gate thresholds can be calibrated from logs, without exposing the
+			// Solana-only Hermes subscription / deploy pipeline to EVM batches.
+			sent = len(batch)
+			if body, err := json.Marshal(batch); err == nil {
+				log.Printf("scanner[%s]: OBSERVE batch of %d pools: %s\n%s", mp.Mode, sent, rhBatchSummary(batch), body)
+			}
+		} else if err := s.fwd.Send("robinhood_pool_discovery", batch, now.Unix()); err != nil {
+			for _, k := range batchKeys {
+				s.seen.Unmark(ctx, k)
+			}
+			log.Printf("scanner[%s]: webhook error for batch of %d (will retry): %v", mp.Mode, len(batch), err)
+		} else {
+			sent = len(batch)
+			log.Printf("scanner[%s]: SIGNAL batch sent %d pools: %s", mp.Mode, sent, rhBatchSummary(batch))
+		}
+	}
+
+	line := fmt.Sprintf("scanner[%s]: cycle done — fetched=%d passed_screen=%d deduped=%d holder_rejected=%d sec_rejected=%d gmgn_rejected=%d gmgn_enriched=%d sent=%d",
+		mp.Mode, len(pools), screened, deduped, holderRejected, secRejected, hqRejected, gmgnEnriched, sent)
+	if len(rejects) > 0 {
+		line += " rejects[" + rejectSummary(rejects) + "]"
+	}
+	log.Print(line)
 }
 
 // directDeploy hands the batch straight to the deterministic picker pipeline
@@ -144,6 +452,11 @@ func (s *Scanner) directDeploy(ctx context.Context, mode string, batch []*meteor
 	deployed := deploy.Deployed(out)
 	summary := deploy.Summarize(out, mode)
 	log.Printf("scanner[%s]: direct deploy done (deployed=%v) for %s\n%s", mode, deployed, batchSummary(batch), summary)
+	// Journal the per-candidate gate decisions — without these, a run of
+	// deterministic rejects is undiagnosable from the logs alone.
+	if narrative := deploy.GateNarrative(out); narrative != "" {
+		log.Printf("scanner[%s]: conviction narrative:\n%s", mode, narrative)
+	}
 	if deployed || s.cfg.ReportRejects {
 		if rerr := s.dep.Report(ctx, summary); rerr != nil {
 			log.Printf("scanner[%s]: report delivery failed: %v", mode, rerr)

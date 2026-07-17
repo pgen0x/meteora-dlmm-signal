@@ -32,6 +32,11 @@ func buildFilters(mp ModeParams) string {
 	if mp.MinQuoteOrganic > 0 {
 		f = append(f, fmt.Sprintf("quote_token_organic_score>=%.0f", mp.MinQuoteOrganic))
 	}
+	// base_token_market_cap<= is verified live — the reference config's own
+	// discovery query pushes its maxMcap through this exact field.
+	if mp.MaxMcap > 0 {
+		f = append(f, fmt.Sprintf("base_token_market_cap<=%.0f", mp.MaxMcap))
+	}
 	if mp.MinBinStep > 0 {
 		f = append(f, fmt.Sprintf("dlmm_bin_step>=%d", mp.MinBinStep))
 	}

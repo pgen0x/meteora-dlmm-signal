@@ -92,6 +92,22 @@ func Summarize(out, mode string) string {
 	return fmt.Sprintf("[%s] ❌ %s", mode, last)
 }
 
+// GateNarrative extracts the pipeline's per-candidate conviction lines
+// ("Batch reject <name> - <reason>", "Batch conviction <name>: <adj>") so the
+// scanner can journal WHY a batch died. Summarize drops these — it keeps only
+// the last line for chat delivery — which left reject reasons invisible
+// (2026-07-12: five silent hours before anyone could see the decisive gate).
+func GateNarrative(out string) string {
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Batch reject ") || strings.HasPrefix(line, "Batch conviction ") {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // Report pipes text to the report command's stdin. Best-effort: delivery is
 // observability, never a reason to fail or retry a deploy.
 func (r *Runner) Report(ctx context.Context, text string) error {

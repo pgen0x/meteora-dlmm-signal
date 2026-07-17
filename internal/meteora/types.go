@@ -118,6 +118,12 @@ type Candidate struct {
 	BotHoldersPct *float64 `json:"bot_holders_pct,omitempty"`
 	GlobalFeesSOL *float64 `json:"global_fees_sol,omitempty"`
 
+	// Deployer wallet from the Jupiter asset record. The pipeline checks it
+	// against the sol:dlmm:blocklist:dev Redis set before any deploy and
+	// stores it in position metadata so a rug close can blocklist the dev.
+	// Empty = unknown (fail-open).
+	Dev string `json:"dev,omitempty"`
+
 	// Pool memory summary from the monitor's close journal
 	// (sol:dlmm:history:pool:<pool>). The pipeline still hard-skips pools
 	// whose history nets negative; these fields let the agent ALSO weigh a

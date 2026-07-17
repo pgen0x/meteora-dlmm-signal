@@ -10,10 +10,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
 
-set -a
-source "$PROFILE_DIR/.env" 2>/dev/null
-set +a
-
 PYTHON="python3"
 
 echo "Starting DLMM Position Monitor Loop (20s interval)..."
@@ -26,6 +22,17 @@ SWEEP_EVERY=30
 i=0
 STATS_STAMP="/tmp/dlmm_stats_last_sent"
 while true; do
+    # Re-source the profile .env EVERY tick, not once at startup. Sourcing it
+    # outside the loop froze the process env at launch time, so a later edit to
+    # DRY_RUN (true -> false) stayed invisible to the running loop — it kept
+    # simulating closes while positions sat past their stop loss (this bit the
+    # Robinhood loop for real: a -50% position was "[dry-run] would close"d for
+    # 70 minutes). A trading loop must never hold a stale copy of its own kill
+    # switch. Also makes DLMM_TZ / DLMM_STATS_HOUR live-editable.
+    set -a
+    source "$PROFILE_DIR/.env" 2>/dev/null
+    set +a
+
     "$PYTHON" "$SCRIPT_DIR/dlmm_monitor.py"
     i=$((i + 1))
     if [ "$i" -ge "$SWEEP_EVERY" ]; then

@@ -19,12 +19,16 @@ MIN_HOLDERS = 100
 DEFAULT_DEPLOY_SOL = 0.5
 
 # Mode defaults (overridden by SOUL.md per-mode blocks)
+# MIN_HOLDERS recalibrated 2026-07-15 from the 14d close journal: big losers
+# entered at median ~7.8k holders vs winners ~13.6k; casual >=10k and multiday
+# >=5k each flipped their mode's journal PnL positive. Keep in sync with
+# internal/meteora/screen.go (daemon-side prefilter) and SOUL.md section 9.
 MODE_DEFAULTS = {
     "casual": {
         "MIN_TVL_USD": 5000.0,
         "MIN_FEE_TVL_24H": 0.3,
         "MIN_MCAP_USD": 250000.0,
-        "MIN_HOLDERS": 500,
+        "MIN_HOLDERS": 10000,
         "TIMEFRAME": "30m",
         "MAX_POSITIONS": 2,
     },
@@ -32,7 +36,7 @@ MODE_DEFAULTS = {
         "MIN_TVL_USD": 50000.0,
         "MIN_FEE_TVL_24H": 1.0,
         "MIN_MCAP_USD": 1000000.0,
-        "MIN_HOLDERS": 1000,
+        "MIN_HOLDERS": 5000,
         "TIMEFRAME": "24h",
         "MAX_POSITIONS": 2,
     },
@@ -653,28 +657,34 @@ WEIGHTED_SIGNALS_HIGHER_IS_BETTER = (
 )
 
 
-def apply_batch_conviction(candidates):
+# Post-adjustment conviction floor per mode. Multiday batch scores naturally
+# run in the 20s (24h-window ratios), casual/turnover in the 60-90s — a single
+# absolute floor would either strangle multiday or wave everything through.
+BATCH_CONVICTION_FLOOR = {"casual": 30.0, "multiday": 12.0, "turnover": 30.0}
+
+
+def apply_batch_conviction(candidates, mode="multiday"):
     """Deterministic port of the deploy agent's STEP 3 pick heuristics.
 
-    Hard-rejects candidates the agent always rejected (dev exited, near-zero
-    global fees, contested ticker without dominant conviction), then adjusts
-    each survivor's score with the same boosts/penalties the agent prompt
-    applied qualitatively, plus the darwinian signal weights when present.
-    Mutates candidate["score"] and returns the surviving list; every drop and
-    adjustment is printed so the pick narrative stays auditable.
+    Hard-rejects only the unambiguous scam tail (near-zero global fees,
+    contested ticker without dominant conviction). Softer risk signals the
+    agent used to weigh qualitatively — dev exited, low-but-nonzero global
+    fees — are score penalties, so a strong candidate can absorb one bad
+    signal instead of the whole batch dying (2026-07-12: 10/12 batches in a
+    row were zeroed by the old dev-exit/fees-30 hard gates while pump.fun dev
+    exits are near-universal on trending pools). A per-mode floor after all
+    adjustments keeps the weak ones out. Mutates candidate["score"] and
+    returns the surviving list; every drop and adjustment is printed so the
+    pick narrative stays auditable.
     """
     survivors = []
     for c in candidates:
-        # Dev wallet exited — the strongest single rug precursor we track.
-        dev_status = c.get("gmgn_dev_status")
-        if dev_status in ("creator_sell", "creator_close"):
-            print(f"Batch reject {c['name']} - dev exited (gmgn_dev_status: {dev_status})")
-            continue
         # Token has produced almost no swap fees globally = bundled/inorganic.
-        # Absent field = unknown (fail-open), never treated as zero.
+        # Only the truly-dead tail hard-rejects; the reference 30-SOL line is
+        # a penalty below. Absent field = unknown (fail-open), never zero.
         gf = c.get("global_fees_sol")
-        if gf is not None and float(gf) < 30:
-            print(f"Batch reject {c['name']} - global fees {float(gf):.1f} SOL < 30 (bundled/scam pattern)")
+        if gf is not None and float(gf) < 5:
+            print(f"Batch reject {c['name']} - global fees {float(gf):.1f} SOL < 5 (bundled/scam pattern)")
             continue
         # Ticker war: the copycat side usually loses. Only a high-conviction
         # candidate may fight an established rival for its symbol.
@@ -705,6 +715,21 @@ def apply_batch_conviction(candidates):
             adj -= 15; notes.append("bundler-15")
         if float(c.get("gmgn_dev_tokens_created") or 0) > 20:
             adj -= 10; notes.append("serial_dev-10")
+
+        # Dev wallet exited — strong rug precursor, but near-universal on
+        # pump.fun trending pools, so it discounts rather than disqualifies.
+        # creator_close (account closed, fully out) weighs more than a sell.
+        dev_status = c.get("gmgn_dev_status")
+        if dev_status == "creator_close":
+            adj -= 25; notes.append("dev_close-25")
+        elif dev_status == "creator_sell":
+            adj -= 15; notes.append("dev_sell-15")
+
+        # Low-but-nonzero global fees: reference bot's 30-SOL bundled/scam
+        # line, demoted from hard reject (Jupiter's figure runs off GMGN's).
+        gf = c.get("global_fees_sol")
+        if gf is not None and float(gf) < 30:
+            adj -= 15; notes.append("low_fees-15")
 
         # Quality penalties from the agent prompt.
         if float(c.get("mcap") or 0) > 5_000_000:
@@ -744,12 +769,18 @@ def apply_batch_conviction(candidates):
                 c["_conviction_adj"] += wa
                 c["_conviction_notes"].append(f"weights{wa:+.1f}")
 
+    floor = BATCH_CONVICTION_FLOOR.get(mode, 12.0)
+    kept = []
     for c in survivors:
         adj = c.get("_conviction_adj", 0.0)
         if adj:
             c["score"] = float(c.get("score", 0)) + adj
             print(f"Batch conviction {c['name']}: {adj:+.1f} ({', '.join(c.get('_conviction_notes', [])) or 'weights'}) -> score {c['score']:.1f}")
-    return survivors
+        if float(c.get("score", 0)) < floor:
+            print(f"Batch reject {c['name']} - conviction score {float(c.get('score', 0)):.1f} < {floor:.0f} {mode} floor")
+            continue
+        kept.append(c)
+    return kept
 
 
 def select_batch_strategy(c, mode):
@@ -824,6 +855,13 @@ def main():
         print(f"[SKIP] Wallet {sol_balance:.3f} SOL < 0.25 SOL minimum — aborting pipeline (no SOL to deploy)")
         sys.exit(0)
     deploy_sol = compute_deploy_amount(sol_balance)
+    # Turnover runs at half size (2026-07-15): the mode booked -0.10 SOL over
+    # 14d and its big losers (WORLDCUP hard SL, febu OOR dump) passed every
+    # entry signal we screen on — the tail risk is structural to the thesis
+    # (tight ranges on fresh degen pools), so cap exposure instead of tuning
+    # gates that don't discriminate.
+    if mode == "turnover":
+        deploy_sol = round(deploy_sol * 0.5, 2)
     if (deploy_sol <= 0 or deploy_sol < 0.10) and not cli.analyze_only:
         print(f"Aborting: deploy amount {deploy_sol:.3f} SOL below 0.10 SOL minimum (wallet {sol_balance:.3f} SOL)")
         sys.exit(0)
@@ -860,7 +898,7 @@ def main():
             print("Aborting: no valid records in --from-batch payload (see docs/SIGNAL_SCHEMA.md)")
             sys.exit(1)
         print(f"Batch mode: {len(candidates)} signalled candidate(s) — discovery/screen skipped")
-        candidates = apply_batch_conviction(candidates)
+        candidates = apply_batch_conviction(candidates, mode)
         if not candidates:
             print("No candidates survived batch conviction gates.")
             sys.exit(0)
@@ -1058,6 +1096,30 @@ def main():
             ttl_mins = int(ttl_out) // 60 if ttl_out and ttl_out.lstrip("-").isdigit() else "?"
             print(f"Skipping {c['name']} - re-entry cooldown active ({ttl_mins}m remaining, reason: {cooldown_val[:60]})")
             continue
+        # Mint-keyed cooldown: the symbol key above is evadable (a rug that
+        # relaunches under a new ticker keeps its mint history; an unrelated
+        # token sharing the ticker inherits a cooldown it never earned). The
+        # monitor sets both keys on close; check both here.
+        if c.get("base_mint"):
+            mint_cd, _, _ = run_command(f"redis-cli get \"sol:dlmm:cooldown:mint:{c['base_mint']}\"")
+            if mint_cd and mint_cd != "(nil)":
+                print(f"Skipping {c['name']} - mint cooldown active (reason: {mint_cd[:60]})")
+                continue
+            # Permanent rug blacklist (mint) — set by the monitor on
+            # catastrophic closes. SISMEMBER returns "1"/"0".
+            bl_mint, _, _ = run_command(f"redis-cli sismember sol:dlmm:blocklist:mint \"{c['base_mint']}\"")
+            if bl_mint and bl_mint.strip() == "1":
+                print(f"Skipping {c['name']} - mint is on the permanent rug blacklist")
+                continue
+        # Dev blocklist (ported from the reference bot's dev-blocklist): the
+        # daemon ships the Jupiter deployer wallet as `dev`; a deployer that
+        # already rugged us never gets a second deploy. Missing dev = unknown,
+        # passes (fail-open).
+        if c.get("dev"):
+            bl_dev, _, _ = run_command(f"redis-cli sismember sol:dlmm:blocklist:dev \"{c['dev']}\"")
+            if bl_dev and bl_dev.strip() == "1":
+                print(f"Skipping {c['name']} - deployer {c['dev'][:8]}… is on the dev blocklist")
+                continue
         # Pool-level cooldown (repeat-deploy churn guard, set post-deploy below).
         pool_cd, _, _ = run_command(f"redis-cli get \"sol:dlmm:cooldown:pool:{c['pool']}\"")
         if pool_cd and pool_cd != "(nil)":
@@ -1286,14 +1348,26 @@ def main():
             
         base_bal = float(bal_data.get("balance", 0))
         # Base token occupies the slot opposite SOL (base is tokenY when sol_is_x).
+        # The range must sit on the base-token side of the price: DLMM bins
+        # above the active bin hold tokenX, bins below hold tokenY. A
+        # token-only deposit into the wrong side lands ZERO liquidity — the
+        # tx succeeds, rent is paid, and the swapped bag strands in the
+        # wallet (2026-07-12 SCAM deploy: bins_below=57/above=0 with X-only
+        # amounts produced an empty position while 27k SCAM sat unhedged).
         if sol_is_x:
+            # Base is tokenY: sell ladder sits BELOW the active bin.
             amount_x = 0
             amount_y = base_bal
+            bins_above = 0
         else:
+            # Base is tokenX: sell ladder sits ABOVE the active bin.
             amount_x = base_bal
             amount_y = 0
+            bins_above = bins_below
+            bins_below = 0
         strategy_type = "bid_ask"
-        print(f"Acquired {base_bal} {winner['base_symbol']}. Ready to deploy token-only Bid-Ask.")
+        print(f"Acquired {base_bal} {winner['base_symbol']}. Ready to deploy token-only Bid-Ask "
+              f"(bins_below: {bins_below}, bins_above: {bins_above}).")
         
     elif strategy == "custom_ratio_spot":
         # Symmetric range: equal bins above and below for balanced in-range time
@@ -1458,6 +1532,9 @@ def main():
         "amount_x": amount_x,
         "amount_y": amount_y,
         "mode": mode,
+        # Deployer wallet (daemon-enriched, may be absent) — a rug close adds
+        # it to sol:dlmm:blocklist:dev so this deployer never deploys us again.
+        "dev": winner.get("dev", ""),
         # Entry-time signal snapshot — the monitor copies this into the close
         # journal so dlmm_weights.py can learn which signals predict winners.
         "signal": {k: winner.get(k) for k in (

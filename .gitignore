@@ -5,7 +5,11 @@
 /dist/
 
 # Secrets / local config
-.env
+# Glob, not a bare `.env`: that left `.env.bak`, `.env.local`, `.env.2026-07-13`
+# untracked BUT committable — and this repo's .env holds wallet private keys.
+# .env.example is the one non-secret template, force-tracked below.
+.env*
+!.env.example
 
 # Go
 /vendor/

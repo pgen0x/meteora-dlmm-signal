@@ -63,5 +63,24 @@
     },
     "enabled": true,
     "model": "dev"
+  },
+  {
+    "id": "rh_dlmm_position_monitor",
+    "name": "Robinhood Chain (Uniswap v3) Position Monitor",
+    "prompt": "You are a Robinhood Chain Trading Specialist. Report open Robinhood Chain (Uniswap v3) LP positions.\n\n⚠️ OUTPUT RULE: Your ENTIRE response must be ONLY the final card. No preamble, no analysis text, no \"Evaluating...\", no code fences, no extra formatting. The very first character of your response must be \"R\" (from \"Robinhood LP Status\"). Any text before the card breaks delivery.\n\n⚠️ THIS JOB DOES NOT TRADE. Exits are owned by the systemd loop `rh-dlmm-monitor.service` (runs the same monitor every 60s and is the ONLY authorized closer for this venue). This cron is REPORT-ONLY — it must NEVER close, claim, or mint. Do not run uni_executor.js. Do not run uni_monitor.py without `--report-only`.\n\n**STEP 1: Get the position report**:\n```bash\npython3 __PROFILE__/skills/solana-dlmm/scripts/uni_monitor.py --report-only\n```\nParse the `MONITOR_REPORT:` JSON line at the end.\n- If `positions` is an empty array → output `[SILENT]` and stop.\n- If the JSON has an `error` field (positions read failed) → output one line: `Robinhood LP Status — read failed: <error>` and stop. Do NOT reconstruct a card from memory.\n\n**STEP 2: Output ONLY the card** — copy the text block that starts with \"Robinhood LP Status — \" from the script output VERBATIM. The script already computed PnL, peak, range, age, 5m/1h momentum, and a HOLD/CLOSE decision label per position. Do not recompute or second-guess it; the `→ CLOSE:` label is informational (the systemd loop acts on it, not you).\n\nRemember: start your response directly with \"Robinhood LP Status — \". Nothing before it.",
+    "skills": [
+      "solana-dlmm"
+    ],
+    "deliver": "REPLACE_ME_telegram_or_platform:REPLACE_ME_channel_id",
+    "enabled_toolsets": [
+      "terminal"
+    ],
+    "schedule": {
+      "kind": "interval",
+      "minutes": 30,
+      "display": "every 30m"
+    },
+    "enabled": true,
+    "model": "dev"
   }
 ]

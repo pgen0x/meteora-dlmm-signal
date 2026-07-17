@@ -29,8 +29,8 @@ set -a && . ./.env && set +a   # load env (fish: use bass or `env` prefix)
 ./install.sh ~/.hermes/profiles/dlmm   # wire assets into a Hermes profile + build
 ```
 
-Go tests exist only for `internal/deploy` (`go test ./internal/deploy/`);
-there is no Makefile. All config is environment-driven (`internal/config`,
+Go tests exist for `internal/deploy` and `internal/robinhood`
+(`go test ./internal/...`); there is no Makefile. All config is environment-driven (`internal/config`,
 defaults in `.env.example`); nothing is hardcoded except the screening
 thresholds.
 
@@ -56,6 +56,30 @@ one pass per enabled mode per `POLL_INTERVAL`.
     flags candidates whose ticker is contested by an established token with
     its own live DLMM pool (`is_pvp` + rival stats); never rejects.
   - `types.go` — JSON structs mirroring the discovery API response exactly.
+- `internal/robinhood` — second venue: Uniswap v3 WETH pools on Robinhood Chain
+  (chain ID 4663). **Two modes, two discovery sources** — no single feed spans
+  both theses, which is why `pollRobinhood` takes an `rhFetcher`:
+  - `Fresh` (`discover.go`) — newly-created pools via GeckoTerminal
+    `new_pools`. A launch feed: a pool scrolls off it within minutes.
+  - `Mature` (`mature.go`, `ROBINHOOD_MATURE`) — established pools (24h+) still
+    printing outsized fee/TVL, via Uniswap's keyless interface GraphQL gateway,
+    which indexes **nothing younger than a day**. One gateway call + one
+    GeckoTerminal `/pools/multi/` enrich call per cycle; the local prefilter is
+    what keeps the enrich to a single request. Sets `FeePaceH24` — the fee pace
+    comes from realized 24h volume, because extrapolating an h1 window would let
+    one busy hour fake a 24× daily rate.
+
+  Both modes share `Screen` and every safety gate (GMGN OpenAPI
+  `chain=robinhood` security + holder quality, Blockscout holders). The deploy
+  pick also passes a supertrend/RSI entry-timing gate (`indicators.go`, the Go
+  port of the skill's `local_indicators.py` — keep them in sync; fail-open,
+  `ROBINHOOD_INDICATOR_GATE`), and `uni_monitor.py` confirms non-emergency
+  exits through the same indicators before closing. Phase 1 is
+  **observe-only** (`ROBINHOOD_ENABLED`, batches journal to the log;
+  `ROBINHOOD_WEBHOOK` forwards them) and NEVER routes to `DEPLOY_CMD` — the
+  pipeline is Solana-only. One deliberate divergence from the fail-open rule:
+  a POSITIVE honeypot/blacklist/sell-tax detection hard-rejects; unknown still
+  passes. Plan + phase status: `docs/ROBINHOOD_CHAIN_PLAN.md`.
 - `internal/store` — `Seen` dedup set: Redis (`SetNX`, one key + TTL per pool)
   or in-memory map. Empty `REDIS_ADDR` selects in-memory.
 - `internal/webhook` — HMAC-SHA256 forwarder. Signature scheme

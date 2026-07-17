@@ -14,11 +14,11 @@ import (
 // fires exactly once until its TTL lapses. Backed by Redis when configured,
 // otherwise an in-memory map (single-instance).
 type Seen struct {
-	rdb    *redis.Client
-	key    string
-	ttl    time.Duration
-	mu     sync.Mutex
-	mem    map[string]time.Time
+	rdb *redis.Client
+	key string
+	ttl time.Duration
+	mu  sync.Mutex
+	mem map[string]time.Time
 }
 
 // New builds a Seen store. addr == "" selects the in-memory backend.

@@ -107,6 +107,7 @@ Every element of `payload` is one candidate pool with these fields:
 | `score` | conviction score 0–100 (Degen Score: geometric mean of trading / LP-activity / fee / liquidity efficiency sub-scores, normalized to a 30m window — a high score requires balance, no single metric can fake it) |
 | `active_tvl` / `volume_active_tvl_ratio` / `unique_lps` / `positions_created` | the Degen Score inputs, exposed so the agent sees *why* a score is high or low |
 | `bot_holders_pct` / `global_fees_sol` | Jupiter audit enrichment (audit gate). **May be absent** — absent means the audit fetch failed (fail-open); treat as unknown, never as zero |
+| `dev` | deployer wallet address from the Jupiter asset record. The pipeline hard-skips devs in the `sol:dlmm:blocklist:dev` Redis set and stores the value in position metadata so a rug close blocklists the dev permanently. **May be absent** — unknown deployer (fail-open) |
 | `prior_closes` / `prior_net_pnl_sol` | pool memory summary from the monitor's close journal (`sol:dlmm:history:pool:<pool>`, last 10 closes / 30d). **May be absent** — absent means no history (or non-Redis dedup backend), not a clean record. Negative net PnL = this pool cost us before |
 | `is_pvp` + `pvp_rival_name` / `pvp_rival_mint` / `pvp_rival_pool` / `pvp_rival_tvl` / `pvp_rival_holders` / `pvp_rival_fees_sol` | same-symbol rival detection: an established token (≥500 holders, ≥30 SOL fees) sharing this ticker has its own live DLMM pool (≥$5k TVL) — a ticker war. Advisory flag, never a daemon reject. **Absent** = no rival found or check failed (fail-open) |
 | `gmgn_smart_wallets` / `gmgn_kol_wallets` | GMGN holder quality (GMGN gate): count of smart-money wallets (proven profitable traders) and KOL/fund wallets currently holding. Higher = stronger conviction; 0 = nobody notable in yet. **May be absent** — fetch failed or gate disabled (fail-open); treat as unknown, never as zero |
@@ -139,3 +140,90 @@ Only pools passing **all** of these are emitted:
 The agent still does final live checks (audit, portfolio slots, balance,
 cooldowns — including the pool-level repeat-deploy cooldown — and learned
 signal weights) before deploying.
+
+## Robinhood Chain venue (`robinhood_pool_discovery`)
+
+Enabled by `ROBINHOOD_ENABLED` (Phase 1: observe-only — batches journal to the
+daemon log; `ROBINHOOD_WEBHOOK=true` forwards them with `source:
+"robinhood_pool_discovery"` and the same envelope/HMAC transport). Payload is
+an array of screened Uniswap v3 and v4 pools on Robinhood Chain (chain ID
+4663). Never routed to `DEPLOY_CMD` — that pipeline is Solana-only; this venue
+deploys through its own direct path (`robinhoodDeploy` → `uni_executor.js` for
+v3, `uni_v4_executor.js` for v4 — docs/ROBINHOOD_CHAIN_PLAN.md Phases 2 and 7).
+A candidate whose protocol has no executor configured
+(`ROBINHOOD_EXECUTOR_CMD` / `ROBINHOOD_V4_EXECUTOR_CMD`) is excluded from the
+deploy pick and stays observe-only.
+
+```json
+{
+  "chain": "robinhood",
+  "mode": "rh-fresh",
+  "pool": "0xc187feb911997c06bc94903def113b677e6577c9",
+  "dex": "uniswap-v3",
+  "protocol": "v3",
+  "name": "CALLIE / WETH 1%",
+  "created_at": "2026-07-13T02:08:17Z",
+  "age_minutes": 124.5,
+  "base_address": "0x21028be78e8f521214d24328715c1a8aadbac5a8",
+  "base_symbol": "CALLIE",
+  "base_decimals": 18,
+  "quote_address": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+  "quote_symbol": "WETH",
+  "fee_pct": 1.0,
+  "reserve_usd": 23794.0,
+  "fdv_usd": 297000.0,
+  "mcap_usd": 0,
+  "volume_h1_usd": 7539.0,
+  "volume_h24_usd": 7539.0,
+  "fee_tvl_day_pct": 7.6,
+  "tx_h1": 65,
+  "buyers_h1": 20,
+  "sellers_h1": 12,
+  "change_m5_pct": 1.2,
+  "change_h1_pct": 231.0,
+  "score": 62.4,
+  "holders": 160,
+  "gmgn_sell_tax_pct": 0,
+  "gmgn_buy_tax_pct": 0,
+  "gmgn_open_source": false,
+  "gmgn_launchpad": "noxa",
+  "gmgn_smart_wallets": 0,
+  "gmgn_bundler_wallets": 85,
+  "gmgn_rat_volume_pct": 0,
+  "gmgn_bundler_volume_pct": 27.98,
+  "gmgn_top10_pct": 17.3,
+  "gmgn_dev_status": "creator_close",
+  "is_copycat": true,
+  "copycat_count": 2
+}
+```
+
+Field notes:
+
+- `is_copycat` / `copycat_count` — set only when two or more candidates in the
+  SAME batch share a ticker (both fields omitted otherwise). Advisory, like the
+  Solana venue's `is_pvp`: it never rejects, but the autonomous picker demotes
+  copycats below any clean candidate. Detection is intra-batch (same-cycle);
+  cross-cycle same-symbol launches aren't correlated.
+- `fee_tvl_day_pct` — projected daily fee/TVL %, computed as
+  `volume_h1 x 24 x fee_pct / reserve` (GeckoTerminal exposes no fee field;
+  v3 fees are deterministic).
+- `holders` + all `gmgn_*` — enrichment, absent on fetch failure (fail-open);
+  treat missing as unknown, never zero.
+- `protocol` — `"v3"` or `"v4"`. For v4 the `pool` field is the bytes32
+  poolId (pools live inside the singleton PoolManager; there is no per-pool
+  contract) and `dex` is `"uniswap-v4"`.
+- `hook` — v4 hook address, omitted when hookless. Always omitted today:
+  hooked pools and dynamic-fee pools are hard-rejected at screen time (a hook
+  can block or skim withdrawals), so the field only appears if that gate is
+  ever relaxed.
+- Screening already applied: Uniswap v3/v4 quoted in WETH, USDG or (v4)
+  native ETH; v4 hooked/dynamic-fee pools rejected; age 10m–24h;
+  reserve $8k–$500k; fee tier ≥ 0.25%; fee pace ≥ 5%/day; ≥30 txns and ≥12
+  buyers in h1; a "many buys, zero sells" pool is rejected (honeypot shape);
+  FDV $20k–$50M; momentum gates (same thresholds as the Solana venue);
+  Blockscout holders ≥ `ROBINHOOD_MIN_HOLDERS`; GMGN rat/bundler caps; GMGN
+  contract security **hard-rejects on positive** honeypot/blacklist/sell-tax
+  detection (unknown/null passes — one of the venue's two fail-closed
+  divergences; the other: a v4 pool whose hook metadata cannot be resolved
+  from the gateway is dropped for the cycle rather than assumed hookless).

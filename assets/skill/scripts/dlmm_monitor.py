@@ -58,7 +58,11 @@ def get_meteora_portfolio_positions(wallet_address):
     except Exception as e:
         return None, str(e)
 
-STOP_LOSS_PCT = -25.0
+# Fallback only — SOUL.md section 9 "Hard Stop-Loss" overrides at runtime.
+# -12.0 since 2026-07-15: the 14d journal's four SL closes booked -0.24 SOL
+# (-15.1% to -19.4% after slippage) while trailing TP caps wins at ~+1-2%; a
+# tighter floor trades more small losses for a thinner tail.
+STOP_LOSS_PCT = -12.0
 TAKE_PROFIT_PCT = 50.0
 MAX_OOR_MINUTES = 30
 # Turnover fast-cycle: an OOR turnover position is idle
@@ -104,6 +108,47 @@ FAST_EXIT_M5_PCT = -3.0
 # slippage). Both thresholds must trip; missing DexScreener data never fires it.
 DOWNTREND_1H_PCT = -5.0
 DOWNTREND_PNL_PCT = -5.0
+# OOR-upside profit lock: above range the position is fully converted to SOL
+# (PnL frozen, fees stopped); at or above this banked gain, close immediately
+# instead of riding the OOR fuse and risking a retrace back into range.
+# Ported from the reference bot's "OOR upside + profitable → close IMMEDIATELY";
+# threshold sits above the typical +1-2.5% trailing-TP win, so it only fires on
+# outsized pumps. Turnover mode is exempt (its OOR close feeds the re-center).
+OOR_UPSIDE_TP_PCT = 3.0
+# OOR-downside recovery grace: at fuse expiry, a 5m candle at or above this
+# grants ONE extension (below) instead of closing into a recovering bounce.
+OOR_RECOVERY_M5_PCT = 1.0
+OOR_RECOVERY_GRACE_MINUTES = 5
+# Permanent rug blacklist floor: a realized close at or below this is rug
+# territory — no re-entry thesis survives it. The mint (and the deployer
+# wallet, when deploy metadata carries one) goes into a permanent Redis set
+# the pipeline checks before any deploy. Ported from the reference bot's
+# token-blacklist / dev-blocklist, auto-added instead of agent-curated.
+RUG_BLACKLIST_PNL_PCT = -30.0
+
+def mint_cooldown_key(meta):
+    """Mint-keyed twin of the symbol re-entry cooldown. The symbol key is
+    evadable in both directions: a rug relaunched under a new ticker sheds its
+    history, and an unrelated token sharing the ticker inherits a cooldown it
+    never earned. Set alongside the symbol key on every close; the pipeline
+    checks both. Returns None when the position has no usable base mint."""
+    mint = (meta or {}).get("base_mint", "")
+    return f"sol:dlmm:cooldown:mint:{mint}" if mint and mint != SOL_MINT else None
+
+def maybe_blacklist_rug(meta, pnl_pct):
+    """Add the mint (and deployer, if known) to the permanent rug blacklists
+    when a close realizes <= RUG_BLACKLIST_PNL_PCT. Callers must skip dry-run
+    closes — permanent state must never come from proxy PnL."""
+    if pnl_pct is None or pnl_pct > RUG_BLACKLIST_PNL_PCT:
+        return
+    mint = (meta or {}).get("base_mint", "")
+    if mint and mint != SOL_MINT:
+        run_command(f"redis-cli sadd sol:dlmm:blocklist:mint \"{mint}\"")
+        print(f"⛔ RUG BLACKLIST: mint {mint[:8]}… permanently blocked ({pnl_pct:+.1f}% close)")
+    dev = (meta or {}).get("dev", "")
+    if dev:
+        run_command(f"redis-cli sadd sol:dlmm:blocklist:dev \"{dev}\"")
+        print(f"⛔ RUG BLACKLIST: deployer {dev[:8]}… permanently blocked")
 
 def send_event_alert(text):
     """Push an event alert straight to the operator via `hermes send` — script-side
@@ -679,6 +724,9 @@ def main():
             cooldown_secs = 7200 if is_dump_close else 3600
             cooldown_key = f"sol:dlmm:cooldown:{base_symbol_cd}"
             run_command(f"redis-cli set \"{cooldown_key}\" \"{cli.reason[:120]}\" ex {cooldown_secs}")
+            mint_cd_key = mint_cooldown_key(meta)
+            if mint_cd_key:
+                run_command(f"redis-cli set \"{mint_cd_key}\" \"{cli.reason[:120]}\" ex {cooldown_secs}")
             print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cooldown_secs // 3600}h")
             # Book daily realized PnL — same as the auto-close path so override-closes are not invisible to WR/stats.
             if not is_dry and guard_pnl_pct is not None:
@@ -703,9 +751,18 @@ def main():
                     if loss_streak >= 2:
                         escalated_secs = 259200 if loss_streak >= 3 else 86400  # 3+ losses→72h, 2 losses→24h
                         run_command(f"redis-cli expire \"{cooldown_key}\" {escalated_secs}")
+                        if mint_cd_key:
+                            run_command(f"redis-cli expire \"{mint_cd_key}\" {escalated_secs}")
                         print(f"🔴 REPEAT LOSS #{loss_streak} in 7d — escalated {base_symbol_cd} cooldown to {escalated_secs // 3600}h")
                 else:
                     run_command(f"redis-cli del \"sol:dlmm:loss_streak:{base_symbol_cd}\"")  # reset streak on profit
+                    # Match the auto-close path: profitable exit shortens to 15m.
+                    if realized_sol > 0 and not any(kw in reason_lower for kw in ("stop-loss", "stop_loss", "downtrend")):
+                        run_command(f"redis-cli expire \"{cooldown_key}\" 900")
+                        if mint_cd_key:
+                            run_command(f"redis-cli expire \"{mint_cd_key}\" 900")
+                        print(f"🚫 Cooldown shortened to 15m for {base_symbol_cd} (profitable force-close)")
+                maybe_blacklist_rug(meta, guard_pnl_pct)
                 print(f"📊 Daily PnL booked: {realized_sol:+.4f} SOL ({guard_pnl_pct:+.2f}%)")
             # Auto-swap base token back to SOL
             base_mint = meta.get("base_mint")
@@ -1040,12 +1097,19 @@ def main():
             if active_bin > upper_bin + max_bins_pumped_above:
                 close_reason = f"Pumped far above range (Active bin {active_bin} > Upper bin {upper_bin} + {max_bins_pumped_above})"
 
+        # 3b. DexScreener liquidity + momentum, fetched BEFORE the OOR decision
+        # because the recovery grace below reads the 5m candle. The exit-side
+        # liquidity floor (5b) and the downtrend/fast-out exits (5c/5d) reuse
+        # these values — still one fetch per position per cycle.
+        pool_liquidity_usd, price_change_h1, price_change_m5 = get_pool_liquidity_usd(pool, meta.get("base_mint"))
+
         # 4. Out of Range (OOR) countdown check. Turnover runs a much shorter
         # fuse: its OOR close feeds the rebalance re-center, so every extra
         # minute waiting is idle fee-capture capital (thesis modes keep the
         # long fuse — their OOR close is a real exit decision).
         oor_limit_minutes = turnover_max_oor_minutes if meta.get("mode") == "turnover" else max_oor_minutes
         oor_key = f"sol:dlmm:position:{pos_addr}:oor_since"
+        oor_upside = (active_bin is not None and upper_bin is not None and active_bin > upper_bin)
         if not in_range:
             oor_val, _, _ = run_command(f"redis-cli get {oor_key}")
             if not oor_val or oor_val == "(nil)":
@@ -1056,10 +1120,44 @@ def main():
                 minutes_oor = (now - oor_start) / 60.0
                 print(f"🔴 Position {pair} has been Out of Range for {minutes_oor:.1f} minutes.")
                 if minutes_oor >= oor_limit_minutes:
-                    close_reason = f"Out of Range for {minutes_oor:.1f}m (limit {oor_limit_minutes}m)"
+                    # 4b. Downside recovery grace (deterministic port of the
+                    # reference bot's "OOR downside + volume recovering →
+                    # consider waiting"): if the 5m candle is green at fuse
+                    # expiry, price is walking back toward the range — one
+                    # 5-minute extension instead of closing into the bounce.
+                    # One-shot per OOR episode (flag resets on range re-entry);
+                    # turnover keeps its 2m re-center fuse; missing m5 never
+                    # extends (fail-closed to the normal fuse).
+                    if (meta.get("mode") != "turnover" and not oor_upside
+                            and price_change_m5 is not None and price_change_m5 >= OOR_RECOVERY_M5_PCT
+                            and not meta.get("oor_grace_used", False)):
+                        meta["oor_grace_used"] = True
+                        if not is_dry_run_stored:
+                            run_command(f"redis-cli set \"sol:dlmm:position:{pos_addr}\" '{json.dumps(meta)}'")
+                        run_command(f"redis-cli set {oor_key} {now - int((oor_limit_minutes - OOR_RECOVERY_GRACE_MINUTES) * 60)}")
+                        print(f"⏳ OOR recovery grace: 5m candle {price_change_m5:+.1f}% >= +{OOR_RECOVERY_M5_PCT}% — extending fuse {OOR_RECOVERY_GRACE_MINUTES}m (one-shot)")
+                    else:
+                        close_reason = f"Out of Range for {minutes_oor:.1f}m (limit {oor_limit_minutes}m)"
+            # 4a. OOR-upside profit lock (ported from the reference bot's "OOR
+            # upside + profitable → close IMMEDIATELY"). Above range the
+            # position has fully converted to SOL: PnL is frozen and fees have
+            # stopped, so the fuse only buys a chance for price to fall back
+            # INTO range — which, with a strong win banked, hands the profit
+            # back before earning resumes. Bank it now. Checked after the
+            # countdown so this reason wins over the plain OOR reason (routes
+            # as a profitable exit: 15m cooldown, no rebalance re-center).
+            # Turnover exempt — its OOR close IS the re-center trigger.
+            if (oor_upside and pnl_pct >= OOR_UPSIDE_TP_PCT
+                    and meta.get("mode") != "turnover"):
+                close_reason = (f"OOR upside profit lock ({pnl_pct:+.2f}% >= +{OOR_UPSIDE_TP_PCT}% "
+                                f"with price above range) — banking the frozen win")
         else:
-            # Clear OOR timer
+            # Clear OOR timer + re-arm the recovery grace for the next episode
             run_command(f"redis-cli del {oor_key}")
+            if meta.get("oor_grace_used", False):
+                meta["oor_grace_used"] = False
+                if not is_dry_run_stored:
+                    run_command(f"redis-cli set \"sol:dlmm:position:{pos_addr}\" '{json.dumps(meta)}'")
 
         # 5. Low Yield Exit Check
         deployed_at = meta.get("deployed_at", now)
@@ -1069,9 +1167,9 @@ def main():
                 close_reason = f"Low yield (Fee/TVL 24h: {fee_per_tvl_24h:.2f}% < {min_fee_tvl_24h_limit}% after {age_minutes:.1f}m)"
 
         # 5b. Exit-side liquidity floor: entry depth gate is not enough — pool liquidity
-        # can drain AFTER entry, stranding the position. Re-check live every cycle.
-        # fail-open: None (fetch failed) never closes; only a confirmed sub-floor reading does.
-        pool_liquidity_usd, price_change_h1, price_change_m5 = get_pool_liquidity_usd(pool, meta.get("base_mint"))
+        # can drain AFTER entry, stranding the position. Re-checked live every cycle
+        # (values fetched once at 3b). fail-open: None (fetch failed) never closes;
+        # only a confirmed sub-floor reading does.
         if pool_liquidity_usd is not None:
             print(f"Exit-liquidity check: pool {pair} liquidity = ${pool_liquidity_usd:,.0f} (floor ${min_exit_liquidity_usd:,.0f})")
             if pool_liquidity_usd < min_exit_liquidity_usd and not close_reason:
@@ -1378,12 +1476,17 @@ def main():
                     print(f"⛔ Turnover rebalance circuit breaker tripped: pool 24h rebalance PnL {rebalance_pnl_24h:+.4f} SOL <= {cb_floor_sol} SOL floor — normal exit + cooldown")
                 else:
                     cooldown_secs = 7200 if is_dump_close else 3600  # 2h dump, 1h other
-                    # Clean profitable casual exit: the pool is often still hot after a
-                    # 30m-window harvest — a full 1h block just forfeits re-entry. Dump
-                    # closes and losses keep the longer cooldowns (and the loss-streak
-                    # escalation below only fires on realized_sol < 0 anyway).
-                    if not is_dump_close and realized_sol > 0 and meta.get("mode", "multiday") == "casual":
-                        cooldown_secs = 1800
+                    # Profitable exit: 15m across all modes (2026-07-15, was 30m
+                    # casual-only). A pool that just paid is proven; a long block only
+                    # forfeits re-entry while it's still hot — journal shows after-WIN
+                    # same-day re-entries net positive. Deliberately overrides the
+                    # dump-class 2h too: trailing-TP and fast-out reasons contain
+                    # "trailing"/"dump" so winners were getting the LONGEST cooldown.
+                    # Real loss events (stop-loss / downtrend) stay excluded, and the
+                    # pipeline's entry momentum gates still reject a re-signal if the
+                    # token is dumping when the cooldown clears.
+                    if realized_sol > 0 and not any(kw in reason_lower for kw in ("stop-loss", "stop_loss", "downtrend")):
+                        cooldown_secs = 900
                     if realized_sol < 0:
                         # Track repeat losses within a 7-day window and escalate cooldown duration
                         run_command(f"redis-cli incr \"{loss_streak_key}\"")
@@ -1396,7 +1499,11 @@ def main():
                     else:
                         run_command(f"redis-cli del \"{loss_streak_key}\"")  # reset streak on profit
                     run_command(f"redis-cli set \"{cooldown_key}\" \"{close_reason[:120]}\" ex {cooldown_secs}")
-                    print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cooldown_secs // 3600}h (reason: {'dump/momentum' if is_dump_close else 'normal exit'})")
+                    mint_cd_key = mint_cooldown_key(meta)
+                    if mint_cd_key:
+                        run_command(f"redis-cli set \"{mint_cd_key}\" \"{close_reason[:120]}\" ex {cooldown_secs}")
+                    cd_label = f"{cooldown_secs // 60}m" if cooldown_secs < 3600 else f"{cooldown_secs // 3600}h"
+                    print(f"🚫 Re-entry cooldown set for {base_symbol_cd}: {cd_label} (reason: {'profitable exit' if cooldown_secs == 900 else ('dump/momentum' if is_dump_close else 'normal exit')})")
 
                 # Low-yield exits also cool the POOL itself for 4h (ported from
                 # the reference bot's low-yield pool cooldown): the symbol cooldown above
@@ -1406,6 +1513,10 @@ def main():
                 if close_reason.startswith("Low yield"):
                     run_command(f"redis-cli set \"sol:dlmm:cooldown:pool:{pool}\" \"{close_reason[:120]}\" ex 14400")
                     print(f"🚫 Pool cooldown set 4h (low yield): {pool}")
+
+                # Permanent rug blacklist — live closes only, never proxy PnL.
+                if not (close_res.get("dryRun") or close_res.get("dry_run") == True):
+                    maybe_blacklist_rug(meta, pnl_pct)
 
                 # Auto-swap base token back to SOL (unless skip_swap is active)
                 base_mint = meta.get("base_mint")

@@ -14,6 +14,7 @@ type ModeParams struct {
 	MinTVL          float64 // MIN_TVL_USD
 	MinFeeTVL       float64 // MIN_FEE_TVL_24H (percent)
 	MinMcap         float64 // MIN_MCAP_USD
+	MaxMcap         float64 // mcap ceiling (USD), 0 disables — see gate comment in Screen
 	MinHolders      int     // MIN_HOLDERS
 	MinDailyFee     float64 // absolute daily-fee floor (USD)
 	MinOrganic      float64 // shared MIN_ORGANIC_SCORE
@@ -43,15 +44,27 @@ type ModeParams struct {
 // showed the 30m median ratio at ~0.01%, so 0 of 50 pools passed most cycles.
 // 0.1 (~4.8%/day pace) still sits ~5x above multiday's 1%/day bar.
 var (
+	// MinHolders recalibrated 2026-07-15 against the 14d close journal (102
+	// live closes, net -0.09 SOL): big losers entered at median 7.8k holders,
+	// winners at 13.6k. Backtest: casual >=10k flips the mode +0.002 -> +0.126
+	// SOL (keeps 20/32 trades); multiday >=5k flips -0.014 -> +0.056 (17/23).
+	// Holder count is token-level, so it is the one gate not confounded by the
+	// per-mode discovery window.
+	// MaxMcap (ported from the reference config, which caps at 10M on a 5m
+	// degen window): a tail guard, not a fit gate. Every strategy assumption
+	// here (volatility harvest, momentum entries, 30m/24h fee windows) is a
+	// memecoin assumption; a $100M+ token passing the fee/TVL bar is almost
+	// always a major having a busy day, where those assumptions don't hold.
+	// Set well above the mode's real population so it only cuts that tail.
 	Casual = ModeParams{
 		Mode: "casual", Timeframe: "30m", TfMinutes: 30,
-		MinTVL: 5000, MinFeeTVL: 0.1, MinMcap: 250000, MinHolders: 500,
+		MinTVL: 5000, MinFeeTVL: 0.1, MinMcap: 250000, MaxMcap: 100_000_000, MinHolders: 10000,
 		MinDailyFee: 20, MinOrganic: 60, MinQuoteOrganic: 60,
 		MinBinStep: 80, MaxBinStep: 125,
 	}
 	Multiday = ModeParams{
 		Mode: "multiday", Timeframe: "24h", TfMinutes: 1440,
-		MinTVL: 50000, MinFeeTVL: 1.0, MinMcap: 1000000, MinHolders: 1000,
+		MinTVL: 50000, MinFeeTVL: 1.0, MinMcap: 1000000, MaxMcap: 500_000_000, MinHolders: 5000,
 		MinDailyFee: 150, MinOrganic: 60, MinQuoteOrganic: 60,
 		MinBinStep: 80, MaxBinStep: 125,
 	}
@@ -144,6 +157,9 @@ func Screen(p Pool, mp ModeParams) (*Candidate, string) {
 	}
 	if base.MarketCap < mp.MinMcap {
 		return nil, fmt.Sprintf("mcap $%.0f < $%.0f", base.MarketCap, mp.MinMcap)
+	}
+	if mp.MaxMcap > 0 && base.MarketCap > mp.MaxMcap {
+		return nil, fmt.Sprintf("mcap $%.0f > $%.0f cap", base.MarketCap, mp.MaxMcap)
 	}
 	if base.Holders < mp.MinHolders {
 		return nil, fmt.Sprintf("holders %d < %d", base.Holders, mp.MinHolders)
