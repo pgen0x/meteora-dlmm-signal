@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.14.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.13.0...v1.14.0) (2026-07-21)
+
+
+### Features
+
+* sol_bidask default strategy + asymmetric exit overhaul ([bb9ed72](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/bb9ed7273e09a959b9362bc3744d3fe68d29bddf))
+
+
+### Bug Fixes
+
+* GUARD hard floor matches the new -25% SL and cites the rug gate ([75a5aea](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/75a5aea40d1df73ff35333a3f44e1acf820773db))
+
 ## [1.13.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.12.0...v1.13.0) (2026-07-17)
 
 
