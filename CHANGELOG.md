@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.14.1](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.14.0...v1.14.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* give release-please a parseable commit for the sol_bidask merge (PR [#39](https://github.com/pgen0x/meteora-dlmm-trading-bot/issues/39)) ([bc937d2](https://github.com/pgen0x/meteora-dlmm-trading-bot/commit/bc937d28cafbe30478a8847706e5e905f90edd18))
+
 ## [1.14.0](https://github.com/pgen0x/meteora-dlmm-trading-bot/compare/v1.13.0...v1.14.0) (2026-07-21)
 
 
